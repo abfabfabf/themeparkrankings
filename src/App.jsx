@@ -363,7 +363,7 @@ const SEED = {
     { id: "tdl_omnibus", landId: "tdl_worldbazaar", name: "Omnibus", type: "Other", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     // Adventureland
     { id: "tdl_jc", landId: "tdl_adventureland", name: "Jungle Cruise", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
-    { id: "tdl_tiki", landId: "tdl_adventureland", name: "Walt Disney's Enchanted Tiki Room", type: "Show", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
+    { id: "tdl_tiki", landId: "tdl_adventureland", name: "Walt Disney's Enchanted Tiki Room: Aloha E Komo Mai", type: "Show", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_piratescarib", landId: "tdl_adventureland", name: "Pirates of the Caribbean", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_treehouse", landId: "tdl_adventureland", name: "Swiss Family Treehouse", type: "Walk-Through", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     // Westernland
@@ -376,10 +376,10 @@ const SEED = {
     { id: "tdl_beast", landId: "tdl_fantasyland", name: "Enchanted Tale of Beauty and the Beast", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_ppf", landId: "tdl_fantasyland", name: "Peter Pan's Flight", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_poohshunny", landId: "tdl_fantasyland", name: "Pooh's Hunny Hunt", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
-    { id: "tdl_smallworld", landId: "tdl_fantasyland", name: "It's a Small World", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
+    { id: "tdl_smallworld", landId: "tdl_fantasyland", name: "It's a Small World with Groot", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_hm", landId: "tdl_fantasyland", name: "Haunted Mansion", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_pinocchio", landId: "tdl_fantasyland", name: "Pinocchio's Daring Journey", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
-    { id: "tdl_snowwhite", landId: "tdl_fantasyland", name: "Snow White's Enchanted Wish", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
+    { id: "tdl_snowwhite", landId: "tdl_fantasyland", name: "Snow White's Adventures", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_dumbo", landId: "tdl_fantasyland", name: "Dumbo the Flying Elephant", type: "Flat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_carousel", landId: "tdl_fantasyland", name: "Castle Carrousel", type: "Flat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_teaparty", landId: "tdl_fantasyland", name: "Alice's Tea Party", type: "Flat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
