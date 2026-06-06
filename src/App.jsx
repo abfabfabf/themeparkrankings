@@ -1067,7 +1067,7 @@ const selStyle = {
 };
 
 // ── SLIDER ────────────────────────────────────────────────────────────────────
-function Slider({ label, subtitle, value, onChange, color = "#f59e0b" }) {
+function Slider({ label, subtitle, value, onChange, color = "#f59e0b", onFocus }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 1 }}>
@@ -1088,7 +1088,10 @@ function Slider({ label, subtitle, value, onChange, color = "#f59e0b" }) {
         }} />
         <input
           type="range" min={0} max={10} step={0.1} value={value}
-          onChange={(e) => onChange(+e.target.value)}
+          onChange={(e) => { if (onFocus) onFocus(); onChange(+e.target.value); }}
+          onMouseDown={onFocus}
+          onTouchStart={onFocus}
+          onFocus={onFocus}
           style={{
             position: "absolute", width: "100%", height: 28,
             opacity: 0, cursor: "pointer", margin: 0, padding: 0
@@ -1112,7 +1115,7 @@ function Slider({ label, subtitle, value, onChange, color = "#f59e0b" }) {
 }
 
 // ── ANCHOR PANEL ──────────────────────────────────────────────────────────────
-function AnchorPanel({ allRated, activeAttractionId, activeDraft }) {
+function AnchorPanel({ allRated, activeAttractionId, activeDraft, focusedStat }) {
   const [expanded, setExpanded] = useState(false);
   const stats = [
     { key: "vibes", label: "Vibes", short: "V", color: "#ec4899" },
@@ -1122,6 +1125,7 @@ function AnchorPanel({ allRated, activeAttractionId, activeDraft }) {
 
   const isLive = activeDraft !== null && allRated.filter(a => a.id !== activeAttractionId).length > 0;
   const pool = allRated.filter((a) => a.id !== activeAttractionId);
+  const focused = focusedStat && isLive ? stats.find(s => s.key === focusedStat) : null;
 
   if (allRated.length === 0) {
     return (
@@ -1136,46 +1140,98 @@ function AnchorPanel({ allRated, activeAttractionId, activeDraft }) {
     );
   }
 
+  // FOCUSED MODE: a slider is being touched — show that stat in full detail with attraction names
+  if (focused) {
+    const val = activeDraft[focused.key];
+    const sorted = [...pool].sort((a, b) => b[focused.key] - a[focused.key]);
+    const above = sorted.filter(a => a[focused.key] >= val);
+    const below = sorted.filter(a => a[focused.key] < val);
+    const justAbove = above[above.length - 1] ?? null;
+    const justBelow = below[0] ?? null;
+    const rank = above.length + 1;
+
+    return (
+      <div style={{
+        position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 50,
+        background: "rgba(7, 7, 17, 0.97)", borderTop: `2px solid ${focused.color}`,
+        backdropFilter: "blur(8px)",
+      }}>
+        <div style={{ maxWidth: 800, margin: "0 auto", padding: "10px 14px" }}>
+          {/* Header strip — stat name + your value + rank */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <span style={{ color: focused.color, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 800 }}>
+              ◈ {focused.label}
+            </span>
+            <div style={{ flex: 1, height: 3, background: "#1a1a2e", borderRadius: 2, position: "relative", maxWidth: 200 }}>
+              <div style={{ position: "absolute", left: 0, width: `${(val / 10) * 100}%`, height: "100%", background: focused.color, borderRadius: 2, transition: "width 0.05s" }} />
+            </div>
+            <span style={{ color: focused.color, fontWeight: 800, fontSize: 16 }}>{val.toFixed(1)}</span>
+            <span style={{ color: "#555", fontSize: 10 }}>#{rank}/{pool.length + 1}</span>
+          </div>
+          {/* Above + Below with names */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{
+              background: justAbove ? "#0a0a14" : "transparent",
+              border: justAbove ? "1px solid #1e1e38" : "1px dashed #1a1a2e",
+              borderRadius: 6, padding: "6px 9px", minHeight: 42
+            }}>
+              {justAbove ? (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span style={{ color: "#555", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em" }}>▲ just above</span>
+                    <span style={{ color: "#22c55e", fontWeight: 800, fontSize: 13 }}>{justAbove[focused.key].toFixed(1)}</span>
+                  </div>
+                  <div style={{ color: "#f0e6c8", fontSize: 11, fontWeight: 600, lineHeight: 1.25, marginTop: 1 }}>{justAbove.name}</div>
+                </>
+              ) : (
+                <div style={{ color: "#333", fontSize: 10, fontStyle: "italic", paddingTop: 6 }}>highest {focused.label} so far</div>
+              )}
+            </div>
+            <div style={{
+              background: justBelow ? "#0a0a14" : "transparent",
+              border: justBelow ? "1px solid #1e1e38" : "1px dashed #1a1a2e",
+              borderRadius: 6, padding: "6px 9px", minHeight: 42
+            }}>
+              {justBelow ? (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span style={{ color: "#555", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em" }}>▼ just below</span>
+                    <span style={{ color: "#ef4444", fontWeight: 800, fontSize: 13 }}>{justBelow[focused.key].toFixed(1)}</span>
+                  </div>
+                  <div style={{ color: "#f0e6c8", fontSize: 11, fontWeight: 600, lineHeight: 1.25, marginTop: 1 }}>{justBelow.name}</div>
+                </>
+              ) : (
+                <div style={{ color: "#333", fontSize: 10, fontStyle: "italic", paddingTop: 6 }}>lowest {focused.label} so far</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // DEFAULT MODE: compact strip — no specific stat active
   return (
     <div style={{
       position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 50,
       background: "rgba(7, 7, 17, 0.96)", borderTop: `1px solid ${isLive ? "#2a2a5a" : "#1e1e38"}`,
       backdropFilter: "blur(8px)",
-      transition: "max-height 0.25s ease",
     }}>
-      {/* Compact summary row — always visible */}
       <div
         onClick={() => setExpanded(!expanded)}
         style={{
-          display: "flex", alignItems: "center", gap: 12, padding: "8px 14px",
+          display: "flex", alignItems: "center", gap: 10, padding: "8px 14px",
           cursor: "pointer", maxWidth: 800, margin: "0 auto"
         }}
       >
         <span style={{ color: isLive ? "#6366f1" : "#555", fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
-          {isLive ? "◈ Live" : "◈ Anchors"}
+          {isLive ? "◈ Touch a slider" : "◈ Anchors"}
         </span>
-        <div style={{ flex: 1, display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center" }}>
+        <div style={{ flex: 1, display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
           {stats.map(({ key, short, color }) => {
             const sorted = [...allRated].sort((a, b) => b[key] - a[key]);
             const top = sorted[0];
             const bot = sorted[sorted.length - 1];
-
-            if (isLive && activeDraft) {
-              const val = activeDraft[key];
-              const compPool = pool;
-              const above = compPool.filter(a => a[key] >= val);
-              const below = compPool.filter(a => a[key] < val);
-              const justAbove = above[above.length - 1] ?? null;
-              const justBelow = below[0] ?? null;
-              return (
-                <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
-                  <span style={{ color, fontWeight: 700 }}>{short}</span>
-                  <span style={{ color: "#22c55e" }}>▲{justAbove ? justAbove[key].toFixed(1) : "—"}</span>
-                  <span style={{ color, fontWeight: 800, fontSize: 12 }}>{val.toFixed(1)}</span>
-                  <span style={{ color: "#ef4444" }}>▼{justBelow ? justBelow[key].toFixed(1) : "—"}</span>
-                </div>
-              );
-            }
             return (
               <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
                 <span style={{ color, fontWeight: 700 }}>{short}</span>
@@ -1189,61 +1245,20 @@ function AnchorPanel({ allRated, activeAttractionId, activeDraft }) {
         <span style={{ color: "#444", fontSize: 14 }}>{expanded ? "▼" : "▲"}</span>
       </div>
 
-      {/* Expanded detail panel */}
       {expanded && (
         <div style={{ maxWidth: 800, margin: "0 auto", padding: "4px 14px 14px", borderTop: "1px solid #1a1a2e" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {stats.map(({ key, label, color }) => {
               const sorted = [...allRated].sort((a, b) => b[key] - a[key]);
-              if (isLive && activeDraft) {
-                const val = activeDraft[key];
-                const compPool = pool;
-                const above = compPool.filter(a => a[key] >= val);
-                const below = compPool.filter(a => a[key] < val);
-                const justAbove = above[above.length - 1] ?? null;
-                const justBelow = below[0] ?? null;
-                const rank = above.length + 1;
-                return (
-                  <div key={key} style={{ background: "#0d0d1c", border: `1px solid ${color}22`, borderRadius: 8, padding: "8px 10px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ color, fontSize: 10, fontWeight: 700, minWidth: 50 }}>{label}</span>
-                      <div style={{ flex: 1, height: 3, background: "#1a1a2e", borderRadius: 2, position: "relative" }}>
-                        <div style={{ position: "absolute", left: 0, width: `${(val / 10) * 100}%`, height: "100%", background: color, borderRadius: 2 }} />
-                      </div>
-                      <span style={{ color, fontWeight: 800, fontSize: 14 }}>{val.toFixed(1)}</span>
-                      <span style={{ color: "#444", fontSize: 9 }}>#{rank}/{pool.length + 1}</span>
-                    </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                      <div style={{ background: justAbove ? "#0a0a14" : "transparent", border: justAbove ? "1px solid #1e1e38" : "1px dashed #1a1a2e", borderRadius: 6, padding: "5px 7px", minHeight: 36 }}>
-                        {justAbove ? (
-                          <>
-                            <div style={{ color: "#555", fontSize: 8, textTransform: "uppercase" }}>▲ above</div>
-                            <div style={{ color: "#f0e6c8", fontSize: 10, fontWeight: 600 }}>{justAbove.name} · <span style={{ color: "#22c55e" }}>{justAbove[key].toFixed(1)}</span></div>
-                          </>
-                        ) : <div style={{ color: "#333", fontSize: 9, fontStyle: "italic" }}>highest {label}</div>}
-                      </div>
-                      <div style={{ background: justBelow ? "#0a0a14" : "transparent", border: justBelow ? "1px solid #1e1e38" : "1px dashed #1a1a2e", borderRadius: 6, padding: "5px 7px", minHeight: 36 }}>
-                        {justBelow ? (
-                          <>
-                            <div style={{ color: "#555", fontSize: 8, textTransform: "uppercase" }}>▼ below</div>
-                            <div style={{ color: "#f0e6c8", fontSize: 10, fontWeight: 600 }}>{justBelow.name} · <span style={{ color: "#ef4444" }}>{justBelow[key].toFixed(1)}</span></div>
-                          </>
-                        ) : <div style={{ color: "#333", fontSize: 9, fontStyle: "italic" }}>lowest {label}</div>}
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
               const top = sorted[0];
               const bot = sorted[sorted.length - 1];
               return (
-                <div key={key} style={{ background: "#0d0d1c", border: "1px solid #1e1e38", borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ color, fontSize: 10, fontWeight: 700, minWidth: 50 }}>{label}</span>
-                  <div style={{ flex: 1, fontSize: 10, color: "#f0e6c8" }}>
-                    <span style={{ color: "#22c55e", fontWeight: 700 }}>▲ {top[key].toFixed(1)}</span> {top.name}
+                <div key={key} style={{ background: "#0d0d1c", border: "1px solid #1e1e38", borderRadius: 8, padding: "7px 10px", fontSize: 11 }}>
+                  <div style={{ color, fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", marginBottom: 3 }}>{label}</div>
+                  <div style={{ color: "#f0e6c8" }}>
+                    <span style={{ color: "#22c55e", fontWeight: 700 }}>▲ {top[key].toFixed(1)}</span> <span style={{ color: "#a0a0c0" }}>{top.name}</span>
                     {top.id !== bot.id && <>
-                      <span style={{ color: "#444", margin: "0 6px" }}>·</span>
-                      <span style={{ color: "#ef4444", fontWeight: 700 }}>▼ {bot[key].toFixed(1)}</span> {bot.name}
+                      <br /><span style={{ color: "#ef4444", fontWeight: 700 }}>▼ {bot[key].toFixed(1)}</span> <span style={{ color: "#a0a0c0" }}>{bot.name}</span>
                     </>}
                   </div>
                 </div>
@@ -1266,6 +1281,7 @@ function RateView({ data, setData, readOnly = false }) {
   const [parkId, setParkId] = useState("");
   const [landId, setLandId] = useState("");
   const [activeId, setActiveId] = useState(null);
+  const [focusedStat, setFocusedStat] = useState(null); // "vibes" | "story" | "novelty" | null
   const [drafts, setDrafts] = useState(() => loadDrafts().attractions ?? {});
   const [landHoursDrafts, setLandHoursDrafts] = useState(() => loadDrafts().landHours ?? {});
   const [sessionDate, setSessionDate] = useState(() => loadDrafts().sessionDate ?? todayISO());
@@ -1336,6 +1352,7 @@ function RateView({ data, setData, readOnly = false }) {
     }));
     // Clear this attraction's draft so the next time you open it, the sliders start at 0
     setDrafts((d) => { const next = { ...d }; delete next[a.id]; return next; });
+    setFocusedStat(null);
     const idx = landAttractions.findIndex((x) => x.id === a.id);
     const next = landAttractions.slice(idx + 1).find((x) => !isRated(x));
     setActiveId(next ? next.id : null);
@@ -1436,6 +1453,7 @@ function RateView({ data, setData, readOnly = false }) {
             allRated={allRated}
             activeAttractionId={activeId}
             activeDraft={activeId ? getDraft(data.attractions.find(a => a.id === activeId)) : null}
+            focusedStat={focusedStat}
           />
 
           {/* Land hours field */}
@@ -1517,7 +1535,7 @@ function RateView({ data, setData, readOnly = false }) {
               }}>
                 {/* Header row */}
                 <div
-                  onClick={() => setActiveId(isOpen ? null : a.id)}
+                  onClick={() => { setActiveId(isOpen ? null : a.id); setFocusedStat(null); }}
                   style={{
                     display: "grid", gridTemplateColumns: "1fr auto auto",
                     alignItems: "center", gap: 12, padding: "12px 16px",
@@ -1545,9 +1563,9 @@ function RateView({ data, setData, readOnly = false }) {
                 {isOpen && (
                   <div style={{ padding: "0 16px 16px", borderTop: "1px solid #1e1e38" }}>
                     <div style={{ paddingTop: 16 }}>
-                      <Slider label="Vibes" subtitle="Did you like hanging out here? Music? Energy? Friends?" value={draft.vibes} onChange={(v) => setDraft(a.id, "vibes", v)} color="#ec4899" />
-                      <Slider label="Story" subtitle="Not just narrative: was the premise delivered on? Did it add to the story of your day?" value={draft.story} onChange={(v) => setDraft(a.id, "story", v)} color="#8b5cf6" />
-                      <Slider label="Novelty" subtitle="How special is this ride? Can you do anything like it anywhere else? In this park? In the world?" value={draft.novelty} onChange={(v) => setDraft(a.id, "novelty", v)} color="#06b6d4" />
+                      <Slider label="Vibes" subtitle="Did you like hanging out here? Music? Energy? Friends?" value={draft.vibes} onChange={(v) => setDraft(a.id, "vibes", v)} color="#ec4899" onFocus={() => setFocusedStat("vibes")} />
+                      <Slider label="Story" subtitle="Not just narrative: was the premise delivered on? Did it add to the story of your day?" value={draft.story} onChange={(v) => setDraft(a.id, "story", v)} color="#8b5cf6" onFocus={() => setFocusedStat("story")} />
+                      <Slider label="Novelty" subtitle="How special is this ride? Can you do anything like it anywhere else? In this park? In the world?" value={draft.novelty} onChange={(v) => setDraft(a.id, "novelty", v)} color="#06b6d4" onFocus={() => setFocusedStat("novelty")} />
                       <Slider label="Comfort Penalty" subtitle="Subtracted from the score: were the seats uncomfortable? Did you get motion sick?" value={draft.comfortPenalty} onChange={(v) => setDraft(a.id, "comfortPenalty", v)} color="#ef4444" />
 
                       {/* Wait Willingness — custom slider, 0–120 min */}
@@ -2267,7 +2285,7 @@ export default function App() {
       )}
 
       {/* Content */}
-      <div style={{ maxWidth: 800, margin: "0 auto", padding: "20px 16px 140px" }}>
+      <div style={{ maxWidth: 800, margin: "0 auto", padding: "20px 16px 180px" }}>
         {tab === "rate" && <RateView data={data} setData={setAndSave} />}
         {tab === "parks" && <ParksView data={data} setData={setAndSave} />}
         {tab === "lands" && <LandsView data={data} setData={setAndSave} />}
