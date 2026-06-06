@@ -1,11 +1,37 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ── SCORING FORMULAS ──────────────────────────────────────────────────────────
-const calcAttractionScore = (a) =>
-  Math.max(0, +(((a.vibes + a.story + a.novelty - a.comfortPenalty) / 3) * ((a.waitWillingness ?? 0) / 10)).toFixed(2));
+// An attraction can have either:
+//   (legacy) inline scores: vibes, story, novelty, comfortPenalty, waitWillingness
+//   (new)    a `visits` array of { id, date, vibes, story, novelty, comfortPenalty, waitWillingness, notes }
+//   (override) a `canonicalVisitId` to use a specific visit instead of averaging
+// `archived: true` means the ride is defunct — its score stays visible, but it doesn't contribute to land/park scores.
+
+const visitScore = (v) =>
+  Math.max(0, +(((v.vibes + v.story + v.novelty - v.comfortPenalty) / 3) * ((v.waitWillingness ?? 0) / 10)).toFixed(2));
+
+const effectiveScores = (a) => {
+  // Returns the "current" set of scores to display, either averaged across visits, the canonical visit, or legacy inline.
+  if (a.visits && a.visits.length > 0) {
+    let pool = a.visits;
+    if (a.canonicalVisitId) {
+      const v = a.visits.find((x) => x.id === a.canonicalVisitId);
+      if (v) return { vibes: v.vibes, story: v.story, novelty: v.novelty, comfortPenalty: v.comfortPenalty, waitWillingness: v.waitWillingness ?? 0 };
+    }
+    const avg = (key) => +(pool.reduce((s, v) => s + (v[key] ?? 0), 0) / pool.length).toFixed(2);
+    return { vibes: avg("vibes"), story: avg("story"), novelty: avg("novelty"), comfortPenalty: avg("comfortPenalty"), waitWillingness: avg("waitWillingness") };
+  }
+  return { vibes: a.vibes ?? 0, story: a.story ?? 0, novelty: a.novelty ?? 0, comfortPenalty: a.comfortPenalty ?? 0, waitWillingness: a.waitWillingness ?? 0 };
+};
+
+const calcAttractionScore = (a) => {
+  const s = effectiveScores(a);
+  return Math.max(0, +(((s.vibes + s.story + s.novelty - s.comfortPenalty) / 3) * ((s.waitWillingness ?? 0) / 10)).toFixed(2));
+};
 
 const calcLandScore = (land, attractions) => {
-  const mine = attractions.filter((a) => a.landId === land.id);
+  // Archived attractions do NOT contribute to land score
+  const mine = attractions.filter((a) => a.landId === land.id && !a.archived);
   const sum = mine.reduce((s, a) => s + calcAttractionScore(a), 0);
   return +(land.hoursWillingToSpend * sum).toFixed(2);
 };
@@ -16,6 +42,14 @@ const calcParkScores = (park, lands, attractions) => {
   const sum = +scores.reduce((s, v) => s + v, 0).toFixed(2);
   const avg = scores.length ? +(sum / scores.length).toFixed(2) : 0;
   return { sum, avg, landCount: myLands.length };
+};
+
+const visitUid = () => `v_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const formatDate = (iso) => {
+  if (!iso || iso === "0000-00-00") return "earlier";
+  const d = new Date(iso + "T12:00:00");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
 // ── SEED DATA ─────────────────────────────────────────────────────────────────
@@ -363,7 +397,7 @@ const SEED = {
     { id: "tdl_omnibus", landId: "tdl_worldbazaar", name: "Omnibus", type: "Other", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     // Adventureland
     { id: "tdl_jc", landId: "tdl_adventureland", name: "Jungle Cruise", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
-    { id: "tdl_tiki", landId: "tdl_adventureland", name: "Walt Disney's Enchanted Tiki Room: Aloha E Komo Mai", type: "Show", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
+    { id: "tdl_tiki", landId: "tdl_adventureland", name: "Walt Disney's Enchanted Tiki Room", type: "Show", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_piratescarib", landId: "tdl_adventureland", name: "Pirates of the Caribbean", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_treehouse", landId: "tdl_adventureland", name: "Swiss Family Treehouse", type: "Walk-Through", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     // Westernland
@@ -376,10 +410,10 @@ const SEED = {
     { id: "tdl_beast", landId: "tdl_fantasyland", name: "Enchanted Tale of Beauty and the Beast", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_ppf", landId: "tdl_fantasyland", name: "Peter Pan's Flight", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_poohshunny", landId: "tdl_fantasyland", name: "Pooh's Hunny Hunt", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
-    { id: "tdl_smallworld", landId: "tdl_fantasyland", name: "It's a Small World with Groot", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
+    { id: "tdl_smallworld", landId: "tdl_fantasyland", name: "It's a Small World", type: "Boat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_hm", landId: "tdl_fantasyland", name: "Haunted Mansion", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_pinocchio", landId: "tdl_fantasyland", name: "Pinocchio's Daring Journey", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
-    { id: "tdl_snowwhite", landId: "tdl_fantasyland", name: "Snow White's Adventures", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
+    { id: "tdl_snowwhite", landId: "tdl_fantasyland", name: "Snow White's Enchanted Wish", type: "Dark Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_dumbo", landId: "tdl_fantasyland", name: "Dumbo the Flying Elephant", type: "Flat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_carousel", landId: "tdl_fantasyland", name: "Castle Carrousel", type: "Flat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
     { id: "tdl_teaparty", landId: "tdl_fantasyland", name: "Alice's Tea Party", type: "Flat Ride", vibes: 0, story: 0, novelty: 0, comfortPenalty: 0 },
@@ -704,11 +738,14 @@ function AttractionsView({ data, setData }) {
     const land = data.lands.find((l) => l.id === a.landId);
     const park = data.parks.find((p) => p.id === land?.parkId);
     const score = calcAttractionScore(a);
-    return { ...a, land, park, score };
+    const eff = effectiveScores(a);
+    const visitCount = a.visits?.length ?? 0;
+    return { ...a, ...eff, land, park, score, visitCount };
   });
   if (filterPark) list = list.filter((a) => a.park?.id === filterPark);
   if (filterLand) list = list.filter((a) => a.land?.id === filterLand);
   if (filterType) list = list.filter((a) => a.type === filterType);
+  // Don't include attractions with no ratings in score-sorted lists where score is 0
   list = list.sort((a, b) => sortBy === "score" ? b.score - a.score : a.name.localeCompare(b.name));
 
   const del = (id) => setData((d) => ({ ...d, attractions: d.attractions.filter((a) => a.id !== id) }));
@@ -745,32 +782,93 @@ function AttractionsView({ data, setData }) {
 
       {list.map((a, i) => (
         <div key={a.id} style={{
-          background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 10, padding: "14px 16px",
-          marginBottom: 8, display: "grid", gridTemplateColumns: "32px 1fr auto", gap: 12, alignItems: "start"
+          background: "#0f0f1a", border: `1px solid ${a.archived ? "#3a2a1a" : "#1e1e38"}`, borderRadius: 10, padding: "14px 16px",
+          marginBottom: 8, display: "grid", gridTemplateColumns: "32px 1fr auto", gap: 12, alignItems: "start",
+          opacity: a.archived ? 0.7 : 1
         }}>
-          <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 18, paddingTop: 2 }}>#{i + 1}</div>
+          <div style={{ color: a.archived ? "#666" : "#f59e0b", fontWeight: 800, fontSize: 18, paddingTop: 2 }}>#{i + 1}</div>
           <div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
-              <span style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 15 }}>{a.name}</span>
+              <span style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 15, textDecoration: a.archived ? "line-through" : "none" }}>{a.name}</span>
               <Badge label={a.type} color="#6366f1" />
+              {a.archived && <Badge label="ARCHIVED" color="#f59e0b" />}
+              {a.visitCount > 0 && <Badge label={`${a.visitCount} visit${a.visitCount === 1 ? "" : "s"}`} color="#94a3b8" />}
             </div>
             <div style={{ color: "#666", fontSize: 12, marginBottom: 8 }}>{a.land?.name} · {a.park?.name}</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
               {[["Vibes", a.vibes, "#ec4899"], ["Story", a.story, "#8b5cf6"], ["Novelty", a.novelty, "#06b6d4"], ["Comfort −", a.comfortPenalty, "#ef4444"], ["Happy Wait", a.waitWillingness ?? 0, "#f59e0b"]].map(([lbl, val, col]) => (
                 <div key={lbl}>
                   <div style={{ color: "#666", fontSize: 10, marginBottom: 2 }}>{lbl}</div>
-                  <div style={{ color: col, fontWeight: 700, fontSize: 13 }}>{lbl === "Happy Wait" ? `${val}m` : val}</div>
+                  <div style={{ color: col, fontWeight: 700, fontSize: 13 }}>{lbl === "Happy Wait" ? `${Math.round(val)}m` : val.toFixed(1)}</div>
                   <ScoreBar value={lbl === "Happy Wait" ? val : val} max={lbl === "Happy Wait" ? 120 : 10} color={col} />
                 </div>
               ))}
             </div>
+            {a.visits && a.visits.length > 0 && (
+              <details style={{ marginTop: 10 }}>
+                <summary style={{ color: "#888", fontSize: 11, cursor: "pointer", userSelect: "none" }}>
+                  📅 Visit history ({a.visits.length})
+                </summary>
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {[...a.visits].sort((v1, v2) => (v2.date || "").localeCompare(v1.date || "")).map((v) => {
+                    const isCanonical = a.canonicalVisitId === v.id;
+                    return (
+                      <div key={v.id} style={{
+                        background: isCanonical ? "#0a1f12" : "#0a0a14",
+                        border: `1px solid ${isCanonical ? "#166534" : "#1e1e38"}`,
+                        borderRadius: 6, padding: "8px 10px", fontSize: 11
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                          <span style={{ color: "#f0e6c8", fontWeight: 600 }}>
+                            {formatDate(v.date)} {isCanonical && <span style={{ color: "#22c55e", fontSize: 10 }}>★ canonical</span>}
+                          </span>
+                          <span style={{ color: "#f59e0b", fontWeight: 700 }}>{visitScore(v).toFixed(2)}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, color: "#888", marginBottom: v.notes ? 4 : 0 }}>
+                          <span style={{ color: "#ec4899" }}>V {v.vibes.toFixed(1)}</span>
+                          <span style={{ color: "#8b5cf6" }}>S {v.story.toFixed(1)}</span>
+                          <span style={{ color: "#06b6d4" }}>N {v.novelty.toFixed(1)}</span>
+                          <span style={{ color: "#ef4444" }}>C −{v.comfortPenalty.toFixed(1)}</span>
+                          <span style={{ color: "#f59e0b" }}>W {Math.round(v.waitWillingness ?? 0)}m</span>
+                        </div>
+                        {v.notes && <div style={{ color: "#a0a0c0", fontStyle: "italic", fontSize: 11, lineHeight: 1.4 }}>"{v.notes}"</div>}
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          {!isCanonical && (
+                            <button onClick={() => setData((d) => ({ ...d, attractions: d.attractions.map((x) => x.id === a.id ? { ...x, canonicalVisitId: v.id } : x) }))} style={{
+                              background: "none", border: "1px solid #2a2a4a", borderRadius: 4, color: "#888", fontSize: 10, cursor: "pointer", padding: "2px 7px"
+                            }}>★ Set canonical</button>
+                          )}
+                          {isCanonical && (
+                            <button onClick={() => setData((d) => ({ ...d, attractions: d.attractions.map((x) => x.id === a.id ? { ...x, canonicalVisitId: null } : x) }))} style={{
+                              background: "none", border: "1px solid #2a2a4a", borderRadius: 4, color: "#888", fontSize: 10, cursor: "pointer", padding: "2px 7px"
+                            }}>← back to average</button>
+                          )}
+                          <button onClick={() => {
+                            if (!confirm(`Delete this visit from ${formatDate(v.date)}?`)) return;
+                            setData((d) => ({ ...d, attractions: d.attractions.map((x) => x.id === a.id ? { ...x, visits: x.visits.filter((y) => y.id !== v.id), canonicalVisitId: x.canonicalVisitId === v.id ? null : x.canonicalVisitId } : x) }));
+                          }} style={{
+                            background: "none", border: "1px solid #4a2a2a", borderRadius: 4, color: "#fca5a5", fontSize: 10, cursor: "pointer", padding: "2px 7px"
+                          }}>Delete</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
           </div>
           <div style={{ textAlign: "right" }}>
-            <div style={{ color: "#f0e6c8", fontWeight: 800, fontSize: 22 }}>{fmt(a.score)}</div>
+            <div style={{ color: a.archived ? "#666" : "#f0e6c8", fontWeight: 800, fontSize: 22 }}>{fmt(a.score)}</div>
             <div style={{ color: "#555", fontSize: 10, marginBottom: 8 }}>score</div>
-            <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-              <Btn small variant="ghost" onClick={() => setEditing(a)}>Edit</Btn>
-              <Btn small danger onClick={() => del(a.id)}>Del</Btn>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+              <button onClick={() => setData((d) => ({ ...d, attractions: d.attractions.map((x) => x.id === a.id ? { ...x, archived: !x.archived } : x) }))} style={{
+                background: "none", border: `1px solid ${a.archived ? "#4a3a1a" : "#2a2a3a"}`, borderRadius: 4, color: a.archived ? "#f59e0b" : "#666",
+                fontSize: 10, cursor: "pointer", padding: "2px 7px"
+              }}>{a.archived ? "↻ Restore" : "📦 Archive"}</button>
+              <div style={{ display: "flex", gap: 4 }}>
+                <Btn small variant="ghost" onClick={() => setEditing(a)}>Edit</Btn>
+                <Btn small danger onClick={() => del(a.id)}>Del</Btn>
+              </div>
             </div>
           </div>
         </div>
@@ -1015,132 +1113,145 @@ function Slider({ label, subtitle, value, onChange, color = "#f59e0b" }) {
 
 // ── ANCHOR PANEL ──────────────────────────────────────────────────────────────
 function AnchorPanel({ allRated, activeAttractionId, activeDraft }) {
+  const [expanded, setExpanded] = useState(false);
   const stats = [
-    { key: "vibes", label: "Vibes", color: "#ec4899" },
-    { key: "story", label: "Story", color: "#8b5cf6" },
-    { key: "novelty", label: "Novelty", color: "#06b6d4" },
+    { key: "vibes", label: "Vibes", short: "V", color: "#ec4899" },
+    { key: "story", label: "Story", short: "S", color: "#8b5cf6" },
+    { key: "novelty", label: "Novelty", short: "N", color: "#06b6d4" },
   ];
 
   const isLive = activeDraft !== null && allRated.filter(a => a.id !== activeAttractionId).length > 0;
-  const pool = allRated
-    .filter((a) => a.id !== activeAttractionId)
-    .map((a) => ({ ...a, score: calcAttractionScore(a) }));
+  const pool = allRated.filter((a) => a.id !== activeAttractionId);
 
-  if (allRated.length === 0) return (
-    <div style={{
-      background: "#0a0a18", border: "1px solid #1e1e38", borderRadius: 10,
-      padding: "14px 16px", marginBottom: 20
-    }}>
-      <div style={{ color: "#444", fontSize: 12, textAlign: "center", fontStyle: "italic" }}>
-        Reference anchors will appear as you save ratings
-      </div>
-    </div>
-  );
-
-  if (isLive) {
+  if (allRated.length === 0) {
     return (
       <div style={{
-        background: "#0a0a18", border: "1px solid #2a2a5a", borderRadius: 10,
-        padding: "14px 16px", marginBottom: 20
+        position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 50,
+        background: "rgba(7, 7, 17, 0.95)", borderTop: "1px solid #1e1e38",
+        backdropFilter: "blur(8px)", padding: "8px 16px",
+        color: "#444", fontSize: 11, textAlign: "center", fontStyle: "italic"
       }}>
-        <div style={{ color: "#6366f1", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>
-          ◈ Live Comparison — per metric
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {stats.map(({ key, label, color }) => {
-            const val = activeDraft[key];
-            const sorted = [...pool].sort((a, b) => b[key] - a[key]);
-            const above = sorted.filter(a => a[key] >= val);
-            const below = sorted.filter(a => a[key] < val);
-            const justAbove = above[above.length - 1] ?? null;
-            const justBelow = below[0] ?? null;
-            const rank = above.length + 1;
-
-            return (
-              <div key={key} style={{
-                background: "#0d0d1c", border: `1px solid ${color}22`, borderRadius: 8, padding: "10px 12px"
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span style={{ color, fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", minWidth: 52 }}>{label}</span>
-                  <div style={{ flex: 1, height: 3, background: "#1a1a2e", borderRadius: 2, position: "relative" }}>
-                    <div style={{ position: "absolute", left: 0, width: `${(val / 10) * 100}%`, height: "100%", background: color, borderRadius: 2, transition: "width 0.05s" }} />
-                  </div>
-                  <span style={{ color, fontWeight: 800, fontSize: 16, minWidth: 32, textAlign: "right" }}>{val.toFixed(1)}</span>
-                  <span style={{ color: "#444", fontSize: 10, minWidth: 52, textAlign: "right" }}>#{rank} of {pool.length + 1}</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                  <div style={{
-                    background: justAbove ? "#0a0a14" : "transparent",
-                    border: justAbove ? `1px solid #1e1e38` : "1px dashed #1a1a2e",
-                    borderRadius: 6, padding: "6px 8px", minHeight: 44
-                  }}>
-                    {justAbove ? (
-                      <>
-                        <div style={{ color: "#555", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em" }}>▲ just above</div>
-                        <div style={{ color: "#f0e6c8", fontSize: 11, fontWeight: 600, lineHeight: 1.3, margin: "2px 0" }}>{justAbove.name}</div>
-                        <div style={{ color: "#22c55e", fontWeight: 800, fontSize: 14 }}>{justAbove[key].toFixed(1)}</div>
-                      </>
-                    ) : (
-                      <div style={{ color: "#333", fontSize: 10, fontStyle: "italic", paddingTop: 8 }}>highest {label}</div>
-                    )}
-                  </div>
-                  <div style={{
-                    background: justBelow ? "#0a0a14" : "transparent",
-                    border: justBelow ? `1px solid #1e1e38` : "1px dashed #1a1a2e",
-                    borderRadius: 6, padding: "6px 8px", minHeight: 44
-                  }}>
-                    {justBelow ? (
-                      <>
-                        <div style={{ color: "#555", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em" }}>▼ just below</div>
-                        <div style={{ color: "#f0e6c8", fontSize: 11, fontWeight: 600, lineHeight: 1.3, margin: "2px 0" }}>{justBelow.name}</div>
-                        <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 14 }}>{justBelow[key].toFixed(1)}</div>
-                      </>
-                    ) : (
-                      <div style={{ color: "#333", fontSize: 10, fontStyle: "italic", paddingTop: 8 }}>lowest {label}</div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        Reference anchors will appear as you save ratings
       </div>
     );
   }
 
-  // Default mode: show overall extremes per stat when no card is open
   return (
     <div style={{
-      background: "#0a0a18", border: "1px solid #1e1e38", borderRadius: 10,
-      padding: "14px 16px", marginBottom: 20
+      position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 50,
+      background: "rgba(7, 7, 17, 0.96)", borderTop: `1px solid ${isLive ? "#2a2a5a" : "#1e1e38"}`,
+      backdropFilter: "blur(8px)",
+      transition: "max-height 0.25s ease",
     }}>
-      <div style={{ color: "#555", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10 }}>
-        ◈ Reference Anchors — your rated extremes
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-        {stats.map(({ key, label, color }) => {
-          const sorted = [...allRated].sort((a, b) => b[key] - a[key]);
-          const top = sorted[0];
-          const bot = sorted[sorted.length - 1];
-          return (
-            <div key={key}>
-              <div style={{ color, fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 6 }}>{label}</div>
-              <div style={{ marginBottom: 6 }}>
-                <div style={{ color: "#666", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.06em" }}>▲ highest</div>
-                <div style={{ color: "#f0e6c8", fontSize: 11, fontWeight: 600, lineHeight: 1.3 }}>{top.name}</div>
-                <div style={{ color, fontWeight: 800, fontSize: 16 }}>{top[key].toFixed(1)}</div>
-              </div>
-              {top.id !== bot.id && (
-                <div>
-                  <div style={{ color: "#666", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.06em" }}>▼ lowest</div>
-                  <div style={{ color: "#f0e6c8", fontSize: 11, fontWeight: 600, lineHeight: 1.3 }}>{bot.name}</div>
-                  <div style={{ color: "#555", fontWeight: 800, fontSize: 16 }}>{bot[key].toFixed(1)}</div>
+      {/* Compact summary row — always visible */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "8px 14px",
+          cursor: "pointer", maxWidth: 800, margin: "0 auto"
+        }}
+      >
+        <span style={{ color: isLive ? "#6366f1" : "#555", fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
+          {isLive ? "◈ Live" : "◈ Anchors"}
+        </span>
+        <div style={{ flex: 1, display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center" }}>
+          {stats.map(({ key, short, color }) => {
+            const sorted = [...allRated].sort((a, b) => b[key] - a[key]);
+            const top = sorted[0];
+            const bot = sorted[sorted.length - 1];
+
+            if (isLive && activeDraft) {
+              const val = activeDraft[key];
+              const compPool = pool;
+              const above = compPool.filter(a => a[key] >= val);
+              const below = compPool.filter(a => a[key] < val);
+              const justAbove = above[above.length - 1] ?? null;
+              const justBelow = below[0] ?? null;
+              return (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                  <span style={{ color, fontWeight: 700 }}>{short}</span>
+                  <span style={{ color: "#22c55e" }}>▲{justAbove ? justAbove[key].toFixed(1) : "—"}</span>
+                  <span style={{ color, fontWeight: 800, fontSize: 12 }}>{val.toFixed(1)}</span>
+                  <span style={{ color: "#ef4444" }}>▼{justBelow ? justBelow[key].toFixed(1) : "—"}</span>
                 </div>
-              )}
-            </div>
-          );
-        })}
+              );
+            }
+            return (
+              <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                <span style={{ color, fontWeight: 700 }}>{short}</span>
+                <span style={{ color: "#22c55e" }}>▲{top[key].toFixed(1)}</span>
+                <span style={{ color: "#666" }}>·</span>
+                <span style={{ color: "#ef4444" }}>▼{bot[key].toFixed(1)}</span>
+              </div>
+            );
+          })}
+        </div>
+        <span style={{ color: "#444", fontSize: 14 }}>{expanded ? "▼" : "▲"}</span>
       </div>
+
+      {/* Expanded detail panel */}
+      {expanded && (
+        <div style={{ maxWidth: 800, margin: "0 auto", padding: "4px 14px 14px", borderTop: "1px solid #1a1a2e" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {stats.map(({ key, label, color }) => {
+              const sorted = [...allRated].sort((a, b) => b[key] - a[key]);
+              if (isLive && activeDraft) {
+                const val = activeDraft[key];
+                const compPool = pool;
+                const above = compPool.filter(a => a[key] >= val);
+                const below = compPool.filter(a => a[key] < val);
+                const justAbove = above[above.length - 1] ?? null;
+                const justBelow = below[0] ?? null;
+                const rank = above.length + 1;
+                return (
+                  <div key={key} style={{ background: "#0d0d1c", border: `1px solid ${color}22`, borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <span style={{ color, fontSize: 10, fontWeight: 700, minWidth: 50 }}>{label}</span>
+                      <div style={{ flex: 1, height: 3, background: "#1a1a2e", borderRadius: 2, position: "relative" }}>
+                        <div style={{ position: "absolute", left: 0, width: `${(val / 10) * 100}%`, height: "100%", background: color, borderRadius: 2 }} />
+                      </div>
+                      <span style={{ color, fontWeight: 800, fontSize: 14 }}>{val.toFixed(1)}</span>
+                      <span style={{ color: "#444", fontSize: 9 }}>#{rank}/{pool.length + 1}</span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                      <div style={{ background: justAbove ? "#0a0a14" : "transparent", border: justAbove ? "1px solid #1e1e38" : "1px dashed #1a1a2e", borderRadius: 6, padding: "5px 7px", minHeight: 36 }}>
+                        {justAbove ? (
+                          <>
+                            <div style={{ color: "#555", fontSize: 8, textTransform: "uppercase" }}>▲ above</div>
+                            <div style={{ color: "#f0e6c8", fontSize: 10, fontWeight: 600 }}>{justAbove.name} · <span style={{ color: "#22c55e" }}>{justAbove[key].toFixed(1)}</span></div>
+                          </>
+                        ) : <div style={{ color: "#333", fontSize: 9, fontStyle: "italic" }}>highest {label}</div>}
+                      </div>
+                      <div style={{ background: justBelow ? "#0a0a14" : "transparent", border: justBelow ? "1px solid #1e1e38" : "1px dashed #1a1a2e", borderRadius: 6, padding: "5px 7px", minHeight: 36 }}>
+                        {justBelow ? (
+                          <>
+                            <div style={{ color: "#555", fontSize: 8, textTransform: "uppercase" }}>▼ below</div>
+                            <div style={{ color: "#f0e6c8", fontSize: 10, fontWeight: 600 }}>{justBelow.name} · <span style={{ color: "#ef4444" }}>{justBelow[key].toFixed(1)}</span></div>
+                          </>
+                        ) : <div style={{ color: "#333", fontSize: 9, fontStyle: "italic" }}>lowest {label}</div>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              const top = sorted[0];
+              const bot = sorted[sorted.length - 1];
+              return (
+                <div key={key} style={{ background: "#0d0d1c", border: "1px solid #1e1e38", borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ color, fontSize: 10, fontWeight: 700, minWidth: 50 }}>{label}</span>
+                  <div style={{ flex: 1, fontSize: 10, color: "#f0e6c8" }}>
+                    <span style={{ color: "#22c55e", fontWeight: 700 }}>▲ {top[key].toFixed(1)}</span> {top.name}
+                    {top.id !== bot.id && <>
+                      <span style={{ color: "#444", margin: "0 6px" }}>·</span>
+                      <span style={{ color: "#ef4444", fontWeight: 700 }}>▼ {bot[key].toFixed(1)}</span> {bot.name}
+                    </>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1151,47 +1262,80 @@ const DRAFT_KEY = "tprs-drafts-v3";
 const loadDrafts = () => { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || "{}"); } catch { return {}; } };
 const saveDrafts = (d) => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch {} };
 
-function RateView({ data, setData }) {
+function RateView({ data, setData, readOnly = false }) {
   const [parkId, setParkId] = useState("");
   const [landId, setLandId] = useState("");
   const [activeId, setActiveId] = useState(null);
   const [drafts, setDrafts] = useState(() => loadDrafts().attractions ?? {});
   const [landHoursDrafts, setLandHoursDrafts] = useState(() => loadDrafts().landHours ?? {});
+  const [sessionDate, setSessionDate] = useState(() => loadDrafts().sessionDate ?? todayISO());
   const [lastSaved, setLastSaved] = useState(null);
 
   // Autosave drafts to localStorage 800ms after any change
   useEffect(() => {
     const t = setTimeout(() => {
-      saveDrafts({ attractions: drafts, landHours: landHoursDrafts });
+      saveDrafts({ attractions: drafts, landHours: landHoursDrafts, sessionDate });
       setLastSaved(new Date());
     }, 800);
     return () => clearTimeout(t);
-  }, [drafts, landHoursDrafts]);
+  }, [drafts, landHoursDrafts, sessionDate]);
 
   const park = data.parks.find((p) => p.id === parkId);
   const lands = data.lands.filter((l) => l.parkId === parkId);
   const land = data.lands.find((l) => l.id === landId);
   const landAttractions = data.attractions.filter((a) => a.landId === landId);
 
-  // An attraction is "rated" if any of its scores have been set above zero in stored data
-  const isRated = (a) => a.vibes > 0 || a.story > 0 || a.novelty > 0 || a.waitWillingness > 0;
-  const allRated = data.attractions.filter(isRated);
+  // An attraction is "rated" if it has any visits OR any legacy score > 0
+  const isRated = (a) => (a.visits && a.visits.length > 0) || a.vibes > 0 || a.story > 0 || a.novelty > 0 || a.waitWillingness > 0;
+  const allRated = data.attractions.filter(isRated).map((a) => ({ ...a, ...effectiveScores(a) }));
 
   const getLandHours = (l) => landHoursDrafts[l.id] ?? l.hoursWillingToSpend;
   const setLandHours = (id, val) => setLandHoursDrafts((d) => ({ ...d, [id]: val }));
   const landHoursSaved = (l) => l.hoursWillingToSpend > 0;
   const commitLandHours = (l) => {
+    if (readOnly) return;
     const hrs = getLandHours(l);
     setData((d) => ({ ...d, lands: d.lands.map((x) => x.id === l.id ? { ...x, hoursWillingToSpend: hrs } : x) }));
   };
 
-  // Drafts initialize from localStorage so mid-session sliders survive tab switches & refreshes
-  const getDraft = (a) => drafts[a.id] ?? { vibes: a.vibes, story: a.story, novelty: a.novelty, comfortPenalty: a.comfortPenalty, waitWillingness: a.waitWillingness ?? 0 };
+  // Drafts initialize at 0 — each rating is a fresh visit. Notes default to empty string.
+  const getDraft = (a) => drafts[a.id] ?? { vibes: 0, story: 0, novelty: 0, comfortPenalty: 0, waitWillingness: 0, notes: "" };
   const setDraft = (id, field, val) => setDrafts((d) => ({ ...d, [id]: { ...getDraft(data.attractions.find(x => x.id === id)), [field]: val } }));
 
   const commitAttraction = (a) => {
+    if (readOnly) return;
     const draft = getDraft(a);
-    setData((d) => ({ ...d, attractions: d.attractions.map((x) => x.id === a.id ? { ...x, ...draft } : x) }));
+    const newVisit = {
+      id: visitUid(),
+      date: sessionDate,
+      vibes: draft.vibes,
+      story: draft.story,
+      novelty: draft.novelty,
+      comfortPenalty: draft.comfortPenalty,
+      waitWillingness: draft.waitWillingness,
+      notes: (draft.notes ?? "").trim(),
+    };
+    setData((d) => ({
+      ...d,
+      attractions: d.attractions.map((x) => {
+        if (x.id !== a.id) return x;
+        let existing = x.visits ?? [];
+        // Migrate legacy inline scores to a visit before adding the new one
+        const hasLegacyInline = !existing.length && (x.vibes > 0 || x.story > 0 || x.novelty > 0 || (x.waitWillingness ?? 0) > 0);
+        if (hasLegacyInline) {
+          existing = [{
+            id: visitUid(),
+            date: "0000-00-00", // unknown legacy date
+            vibes: x.vibes ?? 0, story: x.story ?? 0, novelty: x.novelty ?? 0,
+            comfortPenalty: x.comfortPenalty ?? 0, waitWillingness: x.waitWillingness ?? 0,
+            notes: "(migrated from earlier rating)"
+          }];
+        }
+        return { ...x, visits: [...existing, newVisit] };
+      })
+    }));
+    // Clear this attraction's draft so the next time you open it, the sliders start at 0
+    setDrafts((d) => { const next = { ...d }; delete next[a.id]; return next; });
     const idx = landAttractions.findIndex((x) => x.id === a.id);
     const next = landAttractions.slice(idx + 1).find((x) => !isRated(x));
     setActiveId(next ? next.id : null);
@@ -1221,6 +1365,40 @@ function RateView({ data, setData }) {
           ))}
         </div>
       </div>
+
+      {/* Session Date — appears once a park is selected */}
+      {parkId && (
+        <div style={{
+          marginBottom: 20, background: "#0d0d1c", border: "1px solid #2a2a4a",
+          borderRadius: 10, padding: "14px 16px",
+          display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap"
+        }}>
+          <div>
+            <div style={{ color: "#666", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>
+              Date of visit
+            </div>
+            <div style={{ color: "#a0a0c0", fontSize: 11, fontStyle: "italic" }}>
+              All ratings saved in this session will be logged with this date.
+            </div>
+          </div>
+          <div style={{ flex: 1 }} />
+          <input
+            type="date"
+            value={sessionDate}
+            onChange={(e) => setSessionDate(e.target.value)}
+            disabled={readOnly}
+            style={{
+              background: "#1a1a2e", border: "1px solid #2a2a4a", borderRadius: 6,
+              color: "#f0e6c8", padding: "8px 12px", fontSize: 14, outline: "none",
+              fontFamily: "inherit", colorScheme: "dark"
+            }}
+          />
+          <button onClick={() => setSessionDate(todayISO())} disabled={readOnly} style={{
+            background: "none", border: "1px solid #2a2a4a", borderRadius: 6,
+            color: "#888", fontSize: 11, cursor: "pointer", padding: "6px 10px"
+          }}>↺ today</button>
+        </div>
+      )}
 
       {/* Step 2: Land */}
       {parkId && (
@@ -1352,7 +1530,10 @@ function RateView({ data, setData }) {
                   </div>
                   <div style={{ textAlign: "right" }}>
                     {isSaved ? (
-                      <span style={{ color: "#22c55e", fontSize: 11, fontWeight: 700 }}>✓ saved</span>
+                      <div>
+                        <span style={{ color: "#22c55e", fontSize: 11, fontWeight: 700 }}>✓ {(a.visits?.length ?? 0) > 0 ? `${a.visits.length} visit${a.visits.length === 1 ? "" : "s"}` : "saved"}</span>
+                        {a.archived && <div style={{ color: "#94a3b8", fontSize: 10, marginTop: 2 }}>archived</div>}
+                      </div>
                     ) : (
                       <span style={{ color: "#555", fontSize: 11 }}>not rated</span>
                     )}
@@ -1400,6 +1581,23 @@ function RateView({ data, setData }) {
                         </div>
                       </div>
 
+                      {/* Notes — optional reflection on this visit */}
+                      <div style={{ marginBottom: 14 }}>
+                        <label style={{ color: "#a0a0c0", fontSize: 12, letterSpacing: "0.07em", textTransform: "uppercase", display: "block", marginBottom: 1 }}>Notes (optional)</label>
+                        <div style={{ color: "#555", fontSize: 11, fontStyle: "italic", marginBottom: 6, lineHeight: 1.4 }}>A line about this ride, this visit, what stuck.</div>
+                        <textarea
+                          value={(drafts[a.id]?.notes) ?? ""}
+                          onChange={(e) => setDraft(a.id, "notes", e.target.value)}
+                          placeholder="e.g. broke down halfway, met a cool cast member, finally felt the choreography click…"
+                          rows={2}
+                          style={{
+                            width: "100%", background: "#070711", border: "1px solid #1e1e38",
+                            borderRadius: 6, color: "#f0e6c8", padding: "8px 10px", fontSize: 13,
+                            outline: "none", boxSizing: "border-box", fontFamily: "inherit", resize: "vertical"
+                          }}
+                        />
+                      </div>
+
                       <div style={{
                         display: "flex", justifyContent: "space-between", alignItems: "center",
                         background: "#070711", borderRadius: 8, padding: "10px 14px", marginBottom: 14
@@ -1435,6 +1633,229 @@ function RateView({ data, setData }) {
               ✓ All attractions in {land?.name} rated! Select another land to continue.
             </div>
           )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── COMPARE VIEW ──────────────────────────────────────────────────────────────
+function CompareView({ data, myPassphrase }) {
+  const [theirPhrase, setTheirPhrase] = useState("");
+  const [theirData, setTheirData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [view, setView] = useState("attractions"); // attractions | parks | gaps
+
+  const handleLoad = async () => {
+    const p = theirPhrase.trim().toLowerCase();
+    if (!p) return;
+    if (p === myPassphrase) { setError("That's your own passphrase!"); return; }
+    setLoading(true); setError("");
+    try {
+      const cloud = await cloudLoad(p);
+      if (!cloud) { setError(`No rankings found for "${p}"`); setLoading(false); return; }
+      setTheirData(cloud);
+    } catch { setError("Couldn't load — check your internet."); }
+    setLoading(false);
+  };
+
+  if (!theirData) {
+    return (
+      <div style={{ background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 12, padding: 28 }}>
+        <h2 style={{ margin: "0 0 6px", color: "#f0e6c8", fontSize: 18 }}>Compare with a Friend</h2>
+        <p style={{ color: "#666", fontSize: 13, marginBottom: 18 }}>Enter another passphrase to compare rankings side by side.</p>
+        <input
+          value={theirPhrase}
+          onChange={(e) => setTheirPhrase(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleLoad()}
+          placeholder="e.g. velvet-tower-42"
+          style={{
+            width: "100%", background: "#1a1a2e", border: "1px solid #2a2a4a",
+            borderRadius: 8, color: "#f0e6c8", padding: "12px 14px", fontSize: 16,
+            outline: "none", boxSizing: "border-box", fontFamily: "monospace",
+            letterSpacing: "0.05em", marginBottom: 14
+          }}
+        />
+        {error && <div style={{ color: "#f87171", fontSize: 13, marginBottom: 14 }}>✕ {error}</div>}
+        <Btn onClick={handleLoad}>{loading ? "Loading…" : "Compare →"}</Btn>
+      </div>
+    );
+  }
+
+  // Build comparison data — match attractions by id (and recover names from your data if their dataset is stale)
+  const myRated = data.attractions.filter((a) => (a.visits?.length ?? 0) > 0 || a.vibes > 0);
+  const theirRated = (theirData.attractions ?? []).filter((a) => (a.visits?.length ?? 0) > 0 || a.vibes > 0);
+  const theirMap = new Map(theirRated.map((a) => [a.id, a]));
+  const myMap = new Map(myRated.map((a) => [a.id, a]));
+
+  const both = [];
+  for (const a of myRated) {
+    const theirs = theirMap.get(a.id);
+    if (theirs) {
+      const mine = effectiveScores(a);
+      const t = effectiveScores(theirs);
+      const land = data.lands.find((l) => l.id === a.landId);
+      const park = data.parks.find((p) => p.id === land?.parkId);
+      both.push({
+        id: a.id, name: a.name, type: a.type,
+        landName: land?.name, parkName: park?.name,
+        mine: calcAttractionScore(a),
+        theirs: calcAttractionScore(theirs),
+        mineVibes: mine.vibes, theirsVibes: t.vibes,
+        mineStory: mine.story, theirsStory: t.story,
+        mineNovelty: mine.novelty, theirsNovelty: t.novelty,
+        diff: +(calcAttractionScore(a) - calcAttractionScore(theirs)).toFixed(2),
+      });
+    }
+  }
+  const onlyMine = myRated.filter((a) => !theirMap.has(a.id)).length;
+  const onlyTheirs = theirRated.filter((a) => !myMap.has(a.id)).length;
+
+  const byParkComparison = data.parks.map((p) => {
+    const lands = data.lands.filter((l) => l.parkId === p.id);
+    const theirLands = (theirData.lands ?? []).filter((l) => l.parkId === p.id);
+    const mineScore = calcParkScores(p, data.lands, data.attractions).sum;
+    const theirsScore = calcParkScores(p, theirData.lands ?? [], theirData.attractions ?? []).sum;
+    return { name: p.name, resort: p.resort, mine: mineScore, theirs: theirsScore, diff: +(mineScore - theirsScore).toFixed(2) };
+  }).filter((p) => p.mine > 0 || p.theirs > 0);
+
+  const biggestAgreements = [...both].sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff)).slice(0, 5);
+  const biggestGaps = [...both].sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff)).slice(0, 5);
+
+  return (
+    <div>
+      <div style={{
+        background: "#0d0d1c", border: "1px solid #2a2a4a", borderRadius: 10,
+        padding: "14px 18px", marginBottom: 16,
+        display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap"
+      }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: "#666", fontSize: 11 }}>Comparing</div>
+          <div style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 14 }}>
+            <span style={{ color: "#f59e0b" }}>{myPassphrase}</span> vs <span style={{ color: "#06b6d4" }}>{theirPhrase}</span>
+          </div>
+          <div style={{ color: "#555", fontSize: 11, marginTop: 4 }}>
+            {both.length} attractions rated by both · {onlyMine} only by you · {onlyTheirs} only by them
+          </div>
+        </div>
+        <Btn small variant="ghost" onClick={() => { setTheirData(null); setTheirPhrase(""); }}>↶ change</Btn>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+        {[["attractions", "🎢 Attractions"], ["parks", "🏰 Parks"], ["gaps", "⚡ Highlights"]].map(([k, label]) => (
+          <button key={k} onClick={() => setView(k)} style={{
+            background: view === k ? "#1a1a38" : "#0f0f1a",
+            color: view === k ? "#f0e6c8" : "#666",
+            border: `1px solid ${view === k ? "#6366f1" : "#1e1e38"}`,
+            borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {view === "attractions" && (
+        <>
+          {both.length === 0 && <div style={{ color: "#666", fontSize: 13, fontStyle: "italic" }}>No overlapping ratings yet.</div>}
+          {[...both].sort((a, b) => b.mine + b.theirs - (a.mine + a.theirs)).map((row) => (
+            <div key={row.id} style={{
+              background: "#0a0a14", border: "1px solid #1e1e38", borderRadius: 10,
+              padding: "10px 14px", marginBottom: 6
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                <div>
+                  <div style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 13 }}>{row.name}</div>
+                  <div style={{ color: "#555", fontSize: 10 }}>{row.landName} · {row.parkName}</div>
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 18 }}>{row.mine.toFixed(2)}</div>
+                    <div style={{ color: "#444", fontSize: 9 }}>you</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ color: "#06b6d4", fontWeight: 800, fontSize: 18 }}>{row.theirs.toFixed(2)}</div>
+                    <div style={{ color: "#444", fontSize: 9 }}>them</div>
+                  </div>
+                  <div style={{ textAlign: "right", minWidth: 50 }}>
+                    <div style={{ color: Math.abs(row.diff) < 0.5 ? "#22c55e" : Math.abs(row.diff) > 2 ? "#ef4444" : "#a0a0c0", fontWeight: 800, fontSize: 13 }}>
+                      {row.diff > 0 ? "+" : ""}{row.diff.toFixed(2)}
+                    </div>
+                    <div style={{ color: "#444", fontSize: 9 }}>Δ</div>
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 12, fontSize: 10 }}>
+                {[["V", "Vibes", row.mineVibes, row.theirsVibes, "#ec4899"], ["S", "Story", row.mineStory, row.theirsStory, "#8b5cf6"], ["N", "Novelty", row.mineNovelty, row.theirsNovelty, "#06b6d4"]].map(([sh, label, mine, theirs, col]) => (
+                  <span key={sh} style={{ color: col }}>
+                    <strong>{sh}</strong> <span style={{ color: "#f59e0b" }}>{mine.toFixed(1)}</span>/<span style={{ color: "#06b6d4" }}>{theirs.toFixed(1)}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {view === "parks" && (
+        <>
+          {byParkComparison.map((p) => (
+            <div key={p.name} style={{
+              background: "#0a0a14", border: "1px solid #1e1e38", borderRadius: 10,
+              padding: "12px 16px", marginBottom: 6,
+              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14
+            }}>
+              <div>
+                <div style={{ color: "#f0e6c8", fontWeight: 700 }}>{p.name}</div>
+                <div style={{ color: "#555", fontSize: 11 }}>{p.resort}</div>
+              </div>
+              <div style={{ display: "flex", gap: 16, alignItems: "baseline" }}>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ color: "#f59e0b", fontWeight: 800 }}>{p.mine.toFixed(0)}</div>
+                  <div style={{ color: "#444", fontSize: 9 }}>you</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ color: "#06b6d4", fontWeight: 800 }}>{p.theirs.toFixed(0)}</div>
+                  <div style={{ color: "#444", fontSize: 9 }}>them</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {view === "gaps" && (
+        <>
+          <div style={{ color: "#22c55e", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", marginTop: 8, marginBottom: 8 }}>
+            🤝 Most aligned
+          </div>
+          {biggestAgreements.map((row) => (
+            <div key={row.id} style={{ background: "#0a1a12", border: "1px solid #1a3a2a", borderRadius: 8, padding: "8px 12px", marginBottom: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <span style={{ color: "#f0e6c8", fontSize: 13, fontWeight: 600 }}>{row.name}</span>
+                <span style={{ fontSize: 11 }}>
+                  <span style={{ color: "#f59e0b" }}>{row.mine.toFixed(1)}</span>
+                  <span style={{ color: "#444" }}> / </span>
+                  <span style={{ color: "#06b6d4" }}>{row.theirs.toFixed(1)}</span>
+                  <span style={{ color: "#22c55e", marginLeft: 8 }}>Δ {Math.abs(row.diff).toFixed(2)}</span>
+                </span>
+              </div>
+            </div>
+          ))}
+          <div style={{ color: "#ef4444", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", marginTop: 16, marginBottom: 8 }}>
+            ⚔️ Biggest disagreements
+          </div>
+          {biggestGaps.map((row) => (
+            <div key={row.id} style={{ background: "#1a0a0e", border: "1px solid #3a1a22", borderRadius: 8, padding: "8px 12px", marginBottom: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <span style={{ color: "#f0e6c8", fontSize: 13, fontWeight: 600 }}>{row.name}</span>
+                <span style={{ fontSize: 11 }}>
+                  <span style={{ color: "#f59e0b" }}>{row.mine.toFixed(1)}</span>
+                  <span style={{ color: "#444" }}> / </span>
+                  <span style={{ color: "#06b6d4" }}>{row.theirs.toFixed(1)}</span>
+                  <span style={{ color: "#ef4444", marginLeft: 8 }}>Δ {Math.abs(row.diff).toFixed(2)}</span>
+                </span>
+              </div>
+            </div>
+          ))}
         </>
       )}
     </div>
@@ -1566,11 +1987,35 @@ const loadSavedPhrase = () => { try { return localStorage.getItem(PHRASE_KEY) ||
 const savePhrase = (p) => { try { localStorage.setItem(PHRASE_KEY, p); } catch {} };
 
 // ── APP ───────────────────────────────────────────────────────────────────────
+
+// Detect share view from URL: ?view=passphrase
+const getShareViewPhrase = () => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("view") || "";
+  } catch { return ""; }
+};
+
 export default function App() {
-  const [passphrase, setPassphrase] = useState(() => loadSavedPhrase());
+  const sharePhrase = getShareViewPhrase();
+  const isShareView = !!sharePhrase;
+
+  const [passphrase, setPassphrase] = useState(() => isShareView ? sharePhrase : loadSavedPhrase());
   const [data, setData] = useState(loadData);
   const [tab, setTab] = useState("rate");
   const [syncStatus, setSyncStatus] = useState("idle");
+  const [shareLoading, setShareLoading] = useState(isShareView);
+  const [shareError, setShareError] = useState("");
+
+  // If we landed via ?view=phrase, load that data read-only
+  useEffect(() => {
+    if (!isShareView) return;
+    cloudLoad(sharePhrase).then((cloud) => {
+      if (cloud && cloud.parks) setData(cloud);
+      else setShareError(`No rankings found for "${sharePhrase}"`);
+      setShareLoading(false);
+    }).catch(() => { setShareError("Couldn't connect."); setShareLoading(false); });
+  }, []);
 
   // On passphrase entry: load cloud data if it exists, else push local
   const handlePassphraseEnter = async (phrase, cloudData) => {
@@ -1661,7 +2106,78 @@ export default function App() {
     { id: "parks", label: "🏰 Parks" },
     { id: "lands", label: "🗺 Lands" },
     { id: "attractions", label: "🎢 Attractions" },
+    { id: "compare", label: "⚖ Compare" },
   ];
+
+  // Share view: if URL has ?view=phrase, render a read-only banner mode
+  if (isShareView) {
+    if (shareLoading) {
+      return (
+        <div style={{ minHeight: "100vh", background: "#070711", color: "#f0e6c8", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Georgia', serif" }}>
+          <div style={{ fontSize: 13, color: "#888" }}>Loading shared rankings…</div>
+        </div>
+      );
+    }
+    if (shareError) {
+      return (
+        <div style={{ minHeight: "100vh", background: "#070711", color: "#f0e6c8", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: "'Georgia', serif" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ color: "#f87171", marginBottom: 12 }}>✕ {shareError}</div>
+            <a href="/" style={{ color: "#f59e0b", fontSize: 13 }}>← Go to my rankings</a>
+          </div>
+        </div>
+      );
+    }
+
+    const shareTabs = tabs.filter(t => t.id !== "rate" && t.id !== "compare");
+    const activeShareTab = shareTabs.find(t => t.id === tab) ? tab : "parks";
+
+    return (
+      <div style={{ minHeight: "100vh", background: "#070711", fontFamily: "'Georgia', 'Times New Roman', serif", color: "#f0e6c8" }}>
+        <div style={{
+          background: "linear-gradient(180deg, #1a0a1a 0%, #0a070f 100%)",
+          borderBottom: "1px solid #3a1a4a", padding: "16px 24px 0"
+        }}>
+          <div style={{ maxWidth: 800, margin: "0 auto" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+              <span style={{ color: "#c084fc", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>👁 Read-only share view</span>
+              <span style={{ color: "#666", fontSize: 11 }}>·</span>
+              <span style={{ color: "#f0e6c8", fontFamily: "monospace", fontSize: 13 }}>{sharePhrase}</span>
+            </div>
+            <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800, color: "#f0e6c8" }}>✦ Theme Park Rankings</h1>
+            <p style={{ margin: "0 0 14px", color: "#666", fontSize: 12 }}>
+              You're viewing someone else's rankings. <a href="/" style={{ color: "#f59e0b" }}>Make your own →</a>
+            </p>
+            <div style={{ display: "flex", gap: 2 }}>
+              {shareTabs.map((t) => (
+                <button key={t.id} onClick={() => setTab(t.id)} style={{
+                  background: activeShareTab === t.id ? "#c084fc" : "transparent",
+                  color: activeShareTab === t.id ? "#0f0f1a" : "#888",
+                  border: "none", borderRadius: "6px 6px 0 0",
+                  padding: "8px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13
+                }}>{t.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{ maxWidth: 800, margin: "0 auto", padding: "20px 16px 60px" }}>
+          {activeShareTab === "parks" && <ParksView data={data} setData={() => {}} />}
+          {activeShareTab === "lands" && <LandsView data={data} setData={() => {}} />}
+          {activeShareTab === "attractions" && <AttractionsView data={data} setData={() => {}} />}
+        </div>
+      </div>
+    );
+  }
+
+  const handleCopyShareLink = () => {
+    const url = `${window.location.origin}${window.location.pathname}?view=${encodeURIComponent(passphrase)}`;
+    navigator.clipboard?.writeText(url).then(() => {
+      setImportSuccess(`Share link copied to clipboard! Anyone with this link can view (not edit) your rankings.`);
+      setTimeout(() => setImportSuccess(""), 5000);
+    }).catch(() => {
+      setImportError(`Couldn't auto-copy. Your share link: ${url}`);
+    });
+  };
 
   return (
     <div style={{
@@ -1681,7 +2197,7 @@ export default function App() {
             </h1>
             <span style={{ color: "#f59e0b", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>PERSONAL ENGINE</span>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
             <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
               Attraction → Land → Park · score everything · compare anything
             </p>
@@ -1698,7 +2214,7 @@ export default function App() {
               }}>switch</button>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 2 }}>
+          <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
             {tabs.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
                 background: tab === t.id ? "#f59e0b" : "transparent",
@@ -1709,7 +2225,11 @@ export default function App() {
               }}>{t.label}</button>
             ))}
             <div style={{ flex: 1 }} />
-            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2, flexWrap: "wrap" }}>
+              <button onClick={handleCopyShareLink} style={{
+                background: "none", border: "1px solid #3a1a4a", borderRadius: 6,
+                color: "#c084fc", fontSize: 11, cursor: "pointer", padding: "4px 10px", fontWeight: 700
+              }}>🔗 Share</button>
               <button onClick={handleExport} style={{
                 background: "none", border: "1px solid #2a3a2a", borderRadius: 6,
                 color: "#4ade80", fontSize: 11, cursor: "pointer", padding: "4px 10px", fontWeight: 700
@@ -1747,11 +2267,12 @@ export default function App() {
       )}
 
       {/* Content */}
-      <div style={{ maxWidth: 800, margin: "0 auto", padding: "20px 16px 60px" }}>
+      <div style={{ maxWidth: 800, margin: "0 auto", padding: "20px 16px 140px" }}>
         {tab === "rate" && <RateView data={data} setData={setAndSave} />}
         {tab === "parks" && <ParksView data={data} setData={setAndSave} />}
         {tab === "lands" && <LandsView data={data} setData={setAndSave} />}
         {tab === "attractions" && <AttractionsView data={data} setData={setAndSave} />}
+        {tab === "compare" && <CompareView data={data} myPassphrase={passphrase} />}
       </div>
     </div>
   );
