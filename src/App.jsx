@@ -1657,6 +1657,931 @@ function RateView({ data, setData, readOnly = false }) {
   );
 }
 
+// ── BRACKET VIEW ──────────────────────────────────────────────────────────────
+// Beli-style head-to-head ranking, kept entirely separate from precision scores.
+// Data shape: data.bracket = {
+//   rides: [attractionId...], didNotRide: { [id]: true },
+//   lands: [landId...], didNotGo: { [id]: true }
+// }
+
+function tierFor(index, total) {
+  if (total < 3) return { label: "Ranked", color: "#a0a0c0" };
+  const pos = index / (total - 1); // 0 = best, 1 = worst
+  if (pos <= 0.33) return { label: "Loved it", color: "#22c55e" };
+  if (pos <= 0.66) return { label: "Liked it", color: "#f59e0b" };
+  return { label: "It was fine", color: "#94a3b8" };
+}
+
+// Inverse-rank weighting: turns ordinal ranks into a compoundable score.
+// Top of N-length list = 1.0, bottom = ~0.0
+function rankScore(rankedList, id) {
+  const idx = rankedList.indexOf(id);
+  if (idx < 0 || rankedList.length === 0) return 0;
+  return (rankedList.length - idx) / rankedList.length;
+}
+
+// Derived land score: sum of rank scores of all rides in that land.
+// (Sum, not average — lands with more good rides should win, mirroring precision system.)
+function derivedLandScore(landId, attractions, rankedRides) {
+  const inLand = attractions.filter((a) => a.landId === landId && !a.archived);
+  return +inLand.reduce((s, a) => s + rankScore(rankedRides, a.id), 0).toFixed(3);
+}
+
+// Derived park score: sum of rank scores of all lands in that park (from the land bracket).
+function derivedParkScore(parkId, lands, rankedLands) {
+  const inPark = lands.filter((l) => l.parkId === parkId);
+  return +inPark.reduce((s, l) => s + rankScore(rankedLands, l.id), 0).toFixed(3);
+}
+
+// Returns lands sorted by derivedLandScore (descending) — used to compare "math rank" vs bracket rank
+function derivedLandRanking(lands, attractions, rankedRides) {
+  return [...lands]
+    .map((l) => ({ ...l, derived: derivedLandScore(l.id, attractions, rankedRides) }))
+    .sort((a, b) => b.derived - a.derived);
+}
+
+function BracketView({ data, setData }) {
+  const bracket = data.bracket || { rides: [], didNotRide: {}, lands: [], didNotGo: {} };
+  const rankedRides = bracket.rides || [];
+  const rankedLands = bracket.lands || [];
+  const didNotRide = bracket.didNotRide || {};
+  const didNotGo = bracket.didNotGo || {};
+
+  const [stage, setStage] = useState("hub");
+  // Stages: hub | park-intro | ride-setup | ride-matchup | ride-done
+  //         land-setup | land-matchup | land-done
+  //         park-done | rerank-ride | rerank-land
+
+  const [parkId, setParkId] = useState("");
+  const [sessionDate, setSessionDate] = useState(todayISO());
+
+  // Ride session state
+  const [rideQueue, setRideQueue] = useState([]);
+  const [currentRideId, setCurrentRideId] = useState(null);
+  const [rideBounds, setRideBounds] = useState({ lo: 0, hi: 0 });
+  const [rideCompareIdx, setRideCompareIdx] = useState(0);
+  const [workingRides, setWorkingRides] = useState([]);
+  const [rideToggles, setRideToggles] = useState({});
+
+  // Land session state
+  const [landQueue, setLandQueue] = useState([]);
+  const [currentLandId, setCurrentLandId] = useState(null);
+  const [landBounds, setLandBounds] = useState({ lo: 0, hi: 0 });
+  const [landCompareIdx, setLandCompareIdx] = useState(0);
+  const [workingLands, setWorkingLands] = useState([]);
+  const [landToggles, setLandToggles] = useState({});
+
+  const [rerankMode, setRerankMode] = useState(null); // null | "ride" | "land"
+  const [sessionSummary, setSessionSummary] = useState(null);
+
+  const updateBracket = (patch) => {
+    setData((d) => ({ ...d, bracket: { ...bracket, ...patch } }));
+  };
+
+  const findAttr = (id) => data.attractions.find((a) => a.id === id);
+  const findLand = (id) => data.lands.find((l) => l.id === id);
+  const findPark = (id) => data.parks.find((p) => p.id === id);
+  const parkOf = (a) => findPark(findLand(a?.landId)?.parkId);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HUB
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (stage === "hub") {
+    const [hubTab, setHubTab] = [null, null]; // placeholder, used inline below via local state
+    return <BracketHub
+      data={data} bracket={bracket}
+      rankedRides={rankedRides} rankedLands={rankedLands}
+      didNotRide={didNotRide} didNotGo={didNotGo}
+      onStartPark={(p) => {
+        setParkId(p.id);
+        setSessionDate(todayISO());
+        setStage("park-intro");
+      }}
+      onRerankRide={(a) => {
+        setRerankMode("ride");
+        const filtered = rankedRides.filter((id) => id !== a.id);
+        setWorkingRides(filtered);
+        setCurrentRideId(a.id);
+        setRideBounds({ lo: 0, hi: filtered.length });
+        setRideCompareIdx(Math.floor(filtered.length / 2));
+        setStage("ride-matchup");
+      }}
+      onRerankLand={(l) => {
+        setRerankMode("land");
+        const filtered = rankedLands.filter((id) => id !== l.id);
+        setWorkingLands(filtered);
+        setCurrentLandId(l.id);
+        setLandBounds({ lo: 0, hi: filtered.length });
+        setLandCompareIdx(Math.floor(filtered.length / 2));
+        setStage("land-matchup");
+      }}
+      onClearAll={() => updateBracket({ rides: [], didNotRide: {}, lands: [], didNotGo: {} })}
+      onRemoveDidNotRide={(id) => { const next = { ...didNotRide }; delete next[id]; updateBracket({ didNotRide: next }); }}
+      onRemoveDidNotGo={(id) => { const next = { ...didNotGo }; delete next[id]; updateBracket({ didNotGo: next }); }}
+    />;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PARK INTRO — start screen for a park session
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (stage === "park-intro") {
+    const park = findPark(parkId);
+    const parkRides = data.attractions.filter((a) => findLand(a.landId)?.parkId === parkId && !a.archived);
+    const parkLands = data.lands.filter((l) => l.parkId === parkId);
+    const ridesDone = parkRides.filter((a) => rankedRides.includes(a.id)).length;
+    const landsDone = parkLands.filter((l) => rankedLands.includes(l.id)).length;
+
+    return (
+      <div>
+        <button onClick={() => setStage("hub")} style={{
+          background: "none", border: "1px solid #2a2a4a", borderRadius: 6,
+          color: "#888", fontSize: 12, cursor: "pointer", padding: "4px 10px", marginBottom: 16
+        }}>← back to hub</button>
+
+        <div style={{
+          background: "linear-gradient(180deg, #1a0a2a 0%, #0a0a18 100%)",
+          border: "1px solid #3a2a5a", borderRadius: 14, padding: "28px 24px",
+          marginBottom: 20, textAlign: "center"
+        }}>
+          <div style={{ color: "#c084fc", fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 6 }}>
+            🥊 Head-to-Head Session
+          </div>
+          <h2 style={{ margin: "0 0 8px", color: "#f0e6c8", fontSize: 26, fontWeight: 800 }}>
+            {park?.name}
+          </h2>
+          <div style={{ color: "#888", fontSize: 13, marginBottom: 18 }}>
+            {park?.resort}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", marginBottom: 20, flexWrap: "wrap" }}>
+            <span style={{ background: "#0d0d1c", border: "1px solid #2a2a4a", borderRadius: 6, padding: "5px 10px", fontSize: 11, color: "#a0a0c0" }}>
+              🎢 {parkRides.length} rides · {ridesDone} ranked
+            </span>
+            <span style={{ background: "#0d0d1c", border: "1px solid #2a2a4a", borderRadius: 6, padding: "5px 10px", fontSize: 11, color: "#a0a0c0" }}>
+              🗺 {parkLands.length} lands · {landsDone} ranked
+            </span>
+          </div>
+
+          <p style={{ color: "#888", fontSize: 13, lineHeight: 1.6, maxWidth: 380, margin: "0 auto 20px" }}>
+            You'll go through every ride first — <em>"You can only ride one."</em> Then every land — <em>"Which would you spend more time in?"</em>
+          </p>
+
+          <div style={{
+            background: "#0d0d1c", border: "1px solid #2a2a4a", borderRadius: 10,
+            padding: "12px 16px", marginBottom: 20, display: "inline-flex", alignItems: "center", gap: 10
+          }}>
+            <span style={{ color: "#666", fontSize: 11 }}>Date</span>
+            <input type="date" value={sessionDate} onChange={(e) => setSessionDate(e.target.value)} style={{
+              background: "#1a1a2e", border: "1px solid #2a2a4a", borderRadius: 6,
+              color: "#f0e6c8", padding: "6px 10px", fontSize: 13, outline: "none", colorScheme: "dark"
+            }} />
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
+            <button onClick={() => {
+              const toggles = {};
+              parkRides.forEach((a) => {
+                if (didNotRide[a.id]) toggles[a.id] = false;
+                else if (rankedRides.includes(a.id)) toggles[a.id] = true; // pre-ridden, kept
+                else toggles[a.id] = true;
+              });
+              setRideToggles(toggles);
+              setStage("ride-setup");
+            }} style={{
+              background: "#f59e0b", color: "#0f0f1a", border: "none", borderRadius: 8,
+              padding: "12px 32px", fontWeight: 800, fontSize: 15, cursor: "pointer", letterSpacing: "0.02em"
+            }}>Begin full session →</button>
+
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => {
+                const toggles = {};
+                parkRides.forEach((a) => {
+                  if (didNotRide[a.id]) toggles[a.id] = false;
+                  else toggles[a.id] = true;
+                });
+                setRideToggles(toggles);
+                setStage("ride-setup");
+              }} style={{
+                background: "none", border: "1px solid #2a2a4a", borderRadius: 6,
+                color: "#888", fontSize: 11, cursor: "pointer", padding: "5px 12px"
+              }}>🎢 rides only</button>
+              <button onClick={() => {
+                const toggles = {};
+                parkLands.forEach((l) => {
+                  if (didNotGo[l.id]) toggles[l.id] = false;
+                  else toggles[l.id] = true;
+                });
+                setLandToggles(toggles);
+                setStage("land-setup");
+              }} style={{
+                background: "none", border: "1px solid #2a2a4a", borderRadius: 6,
+                color: "#888", fontSize: 11, cursor: "pointer", padding: "5px 12px"
+              }}>🗺 lands only</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RIDE SETUP — checkbox list of rides for this park
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (stage === "ride-setup") {
+    const park = findPark(parkId);
+    const parkRides = data.attractions.filter((a) => findLand(a.landId)?.parkId === parkId && !a.archived);
+    const lands = data.lands.filter((l) => l.parkId === parkId);
+
+    const toggleAll = (val) => {
+      const t = { ...rideToggles };
+      parkRides.forEach((a) => { if (!rankedRides.includes(a.id)) t[a.id] = val; });
+      setRideToggles(t);
+    };
+
+    const begin = () => {
+      const newDidNotRide = { ...didNotRide };
+      const toQueue = [];
+      parkRides.forEach((a) => {
+        if (rankedRides.includes(a.id)) return;
+        if (rideToggles[a.id]) { delete newDidNotRide[a.id]; toQueue.push(a.id); }
+        else newDidNotRide[a.id] = true;
+      });
+      updateBracket({ didNotRide: newDidNotRide });
+
+      if (toQueue.length === 0) {
+        // Skip ride phase, go straight to land
+        const toggles = {};
+        lands.forEach((l) => {
+          if (didNotGo[l.id]) toggles[l.id] = false;
+          else toggles[l.id] = true;
+        });
+        setLandToggles(toggles);
+        setStage("land-setup");
+        return;
+      }
+
+      setRideQueue(toQueue);
+      if (rankedRides.length === 0) {
+        // First ride bootstraps
+        const first = toQueue[0];
+        setWorkingRides([first]);
+        if (toQueue.length === 1) {
+          updateBracket({ rides: [first] });
+          const toggles = {};
+          lands.forEach((l) => { if (didNotGo[l.id]) toggles[l.id] = false; else toggles[l.id] = true; });
+          setLandToggles(toggles);
+          setStage("land-setup");
+        } else {
+          setRideQueue(toQueue.slice(1));
+          const next = toQueue[1];
+          setCurrentRideId(next);
+          setRideBounds({ lo: 0, hi: 1 });
+          setRideCompareIdx(0);
+          setStage("ride-matchup");
+        }
+      } else {
+        setWorkingRides([...rankedRides]);
+        setCurrentRideId(toQueue[0]);
+        setRideBounds({ lo: 0, hi: rankedRides.length });
+        setRideCompareIdx(Math.floor(rankedRides.length / 2));
+        setStage("ride-matchup");
+      }
+    };
+
+    return (
+      <div>
+        <div style={{ marginBottom: 16, display: "flex", alignItems: "baseline", gap: 10 }}>
+          <button onClick={() => setStage("park-intro")} style={{
+            background: "none", border: "1px solid #2a2a4a", borderRadius: 6,
+            color: "#888", fontSize: 12, cursor: "pointer", padding: "4px 10px"
+          }}>← back</button>
+          <h2 style={{ margin: 0, color: "#f0e6c8", fontSize: 18 }}>🎢 {park?.name} — rides</h2>
+        </div>
+
+        <div style={{ color: "#a0a0c0", fontSize: 13, marginBottom: 14, lineHeight: 1.5 }}>
+          Check the rides you experienced. Unchecked = "did not ride." Previously skipped rides are marked — check them if you finally rode.
+        </div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+          <button onClick={() => toggleAll(true)} style={smallBtnStyle}>✓ select all</button>
+          <button onClick={() => toggleAll(false)} style={smallBtnStyle}>✕ none</button>
+        </div>
+
+        {lands.map((l) => {
+          const landAttrs = parkRides.filter((a) => a.landId === l.id);
+          if (landAttrs.length === 0) return null;
+          return (
+            <div key={l.id} style={{ marginBottom: 16 }}>
+              <div style={{ color: "#666", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+                {l.name}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {landAttrs.map((a) => {
+                  const inList = rankedRides.includes(a.id);
+                  const checked = rideToggles[a.id];
+                  const previouslySkipped = didNotRide[a.id];
+                  return (
+                    <label key={a.id} style={{
+                      background: inList ? "#0a1f12" : previouslySkipped ? "#1f1a0a" : checked ? "#0d0d1c" : "#0a0a14",
+                      border: `1px solid ${inList ? "#166534" : previouslySkipped ? "#5a4a1a" : checked ? "#2a3a5a" : "#1e1e38"}`,
+                      borderRadius: 6, padding: "8px 12px", display: "flex", alignItems: "center", gap: 10,
+                      cursor: inList ? "default" : "pointer"
+                    }}>
+                      <input type="checkbox" checked={checked || inList} disabled={inList}
+                        onChange={(e) => setRideToggles({ ...rideToggles, [a.id]: e.target.checked })} style={{ cursor: "pointer" }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: "#f0e6c8", fontSize: 13, fontWeight: 600 }}>{a.name}</div>
+                        <div style={{ color: "#555", fontSize: 10 }}>{a.type}</div>
+                      </div>
+                      {inList && <span style={{ color: "#4ade80", fontSize: 10, fontWeight: 700 }}>✓ ranked</span>}
+                      {previouslySkipped && !inList && <span style={{ color: "#f59e0b", fontSize: 10, fontWeight: 700 }}>prev. skipped</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+
+        <div style={{ position: "sticky", bottom: 80, padding: "12px 0", background: "linear-gradient(to top, #070711 70%, transparent)" }}>
+          <Btn onClick={begin}>Begin ride matchups →</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RIDE MATCHUP
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (stage === "ride-matchup") {
+    const current = findAttr(currentRideId);
+    const opponentId = workingRides[rideCompareIdx];
+    const opponent = opponentId ? findAttr(opponentId) : null;
+    if (!current || !opponent) return <div style={{ color: "#666", fontSize: 13 }}>Loading matchup…</div>;
+
+    const finishInsert = (insertIndex) => {
+      const newWorking = [...workingRides];
+      newWorking.splice(insertIndex, 0, currentRideId);
+
+      if (rerankMode === "ride") {
+        updateBracket({ rides: newWorking });
+        setRerankMode(null);
+        setStage("hub");
+        return;
+      }
+
+      const remaining = rideQueue.slice(1);
+      if (remaining.length === 0) {
+        updateBracket({ rides: newWorking });
+        // Transition to land phase
+        const lands = data.lands.filter((l) => l.parkId === parkId);
+        const toggles = {};
+        lands.forEach((l) => { if (didNotGo[l.id]) toggles[l.id] = false; else toggles[l.id] = true; });
+        setLandToggles(toggles);
+        setStage("land-setup");
+        return;
+      }
+      setRideQueue(remaining);
+      setWorkingRides(newWorking);
+      setCurrentRideId(remaining[0]);
+      setRideBounds({ lo: 0, hi: newWorking.length });
+      setRideCompareIdx(Math.floor(newWorking.length / 2));
+    };
+
+    const pickWinner = (winnerId) => {
+      const currentWon = winnerId === currentRideId;
+      let newLo = rideBounds.lo, newHi = rideBounds.hi;
+      if (currentWon) newHi = rideCompareIdx;
+      else newLo = rideCompareIdx + 1;
+      if (newLo >= newHi) { finishInsert(newLo); return; }
+      setRideBounds({ lo: newLo, hi: newHi });
+      setRideCompareIdx(Math.floor((newLo + newHi) / 2));
+    };
+
+    const skip = () => {
+      const newLo = rideCompareIdx + 1;
+      if (newLo >= rideBounds.hi) { finishInsert(newLo); return; }
+      setRideBounds({ lo: newLo, hi: rideBounds.hi });
+      setRideCompareIdx(Math.floor((newLo + rideBounds.hi) / 2));
+    };
+
+    const compsRemaining = Math.ceil(Math.log2(Math.max(2, rideBounds.hi - rideBounds.lo + 1)));
+
+    return <MatchupScreen
+      title="🎢 You can only ride one."
+      subtitle="Go with your gut."
+      a={current} b={opponent}
+      aPark={parkOf(current)} bPark={parkOf(opponent)}
+      aLand={findLand(current.landId)} bLand={findLand(opponent.landId)}
+      compsRemaining={compsRemaining}
+      onPick={pickWinner}
+      onSkip={skip}
+      onQuit={() => { if (confirm("Quit this session? Your progress will be lost.")) { setRerankMode(null); setStage("hub"); } }}
+      mode={rerankMode === "ride" ? "Re-ranking" : "Ride matchup"}
+    />;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // LAND SETUP
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (stage === "land-setup") {
+    const park = findPark(parkId);
+    const parkLands = data.lands.filter((l) => l.parkId === parkId);
+
+    const toggleAll = (val) => {
+      const t = { ...landToggles };
+      parkLands.forEach((l) => { if (!rankedLands.includes(l.id)) t[l.id] = val; });
+      setLandToggles(t);
+    };
+
+    const begin = () => {
+      const newDidNotGo = { ...didNotGo };
+      const toQueue = [];
+      parkLands.forEach((l) => {
+        if (rankedLands.includes(l.id)) return;
+        if (landToggles[l.id]) { delete newDidNotGo[l.id]; toQueue.push(l.id); }
+        else newDidNotGo[l.id] = true;
+      });
+      updateBracket({ didNotGo: newDidNotGo });
+
+      if (toQueue.length === 0) { setStage("park-done"); return; }
+
+      setLandQueue(toQueue);
+      if (rankedLands.length === 0) {
+        const first = toQueue[0];
+        setWorkingLands([first]);
+        if (toQueue.length === 1) {
+          updateBracket({ lands: [first] });
+          setStage("park-done");
+        } else {
+          setLandQueue(toQueue.slice(1));
+          setCurrentLandId(toQueue[1]);
+          setLandBounds({ lo: 0, hi: 1 });
+          setLandCompareIdx(0);
+          setStage("land-matchup");
+        }
+      } else {
+        setWorkingLands([...rankedLands]);
+        setCurrentLandId(toQueue[0]);
+        setLandBounds({ lo: 0, hi: rankedLands.length });
+        setLandCompareIdx(Math.floor(rankedLands.length / 2));
+        setStage("land-matchup");
+      }
+    };
+
+    return (
+      <div>
+        <div style={{ marginBottom: 16, display: "flex", alignItems: "baseline", gap: 10 }}>
+          <button onClick={() => setStage("park-intro")} style={{
+            background: "none", border: "1px solid #2a2a4a", borderRadius: 6,
+            color: "#888", fontSize: 12, cursor: "pointer", padding: "4px 10px"
+          }}>← back</button>
+          <h2 style={{ margin: 0, color: "#f0e6c8", fontSize: 18 }}>🗺 {park?.name} — lands</h2>
+        </div>
+
+        <div style={{ color: "#a0a0c0", fontSize: 13, marginBottom: 14, lineHeight: 1.5 }}>
+          Check the lands you actually walked through. Unchecked = "did not go." This is about <em>atmosphere</em> — forget the rides for a moment.
+        </div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+          <button onClick={() => toggleAll(true)} style={smallBtnStyle}>✓ select all</button>
+          <button onClick={() => toggleAll(false)} style={smallBtnStyle}>✕ none</button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {parkLands.map((l) => {
+            const inList = rankedLands.includes(l.id);
+            const checked = landToggles[l.id];
+            const previouslySkipped = didNotGo[l.id];
+            return (
+              <label key={l.id} style={{
+                background: inList ? "#0a1f12" : previouslySkipped ? "#1f1a0a" : checked ? "#0d0d1c" : "#0a0a14",
+                border: `1px solid ${inList ? "#166534" : previouslySkipped ? "#5a4a1a" : checked ? "#2a3a5a" : "#1e1e38"}`,
+                borderRadius: 6, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10,
+                cursor: inList ? "default" : "pointer"
+              }}>
+                <input type="checkbox" checked={checked || inList} disabled={inList}
+                  onChange={(e) => setLandToggles({ ...landToggles, [l.id]: e.target.checked })} style={{ cursor: "pointer" }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: "#f0e6c8", fontSize: 14, fontWeight: 600 }}>{l.name}</div>
+                </div>
+                {inList && <span style={{ color: "#4ade80", fontSize: 10, fontWeight: 700 }}>✓ ranked</span>}
+                {previouslySkipped && !inList && <span style={{ color: "#f59e0b", fontSize: 10, fontWeight: 700 }}>prev. skipped</span>}
+              </label>
+            );
+          })}
+        </div>
+
+        <div style={{ position: "sticky", bottom: 80, padding: "12px 0", background: "linear-gradient(to top, #070711 70%, transparent)" }}>
+          <Btn onClick={begin}>Begin land matchups →</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // LAND MATCHUP
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (stage === "land-matchup") {
+    const current = findLand(currentLandId);
+    const opponentId = workingLands[landCompareIdx];
+    const opponent = opponentId ? findLand(opponentId) : null;
+    if (!current || !opponent) return <div style={{ color: "#666", fontSize: 13 }}>Loading matchup…</div>;
+
+    const finishInsert = (insertIndex) => {
+      const newWorking = [...workingLands];
+      newWorking.splice(insertIndex, 0, currentLandId);
+
+      if (rerankMode === "land") {
+        updateBracket({ lands: newWorking });
+        setRerankMode(null);
+        setStage("hub");
+        return;
+      }
+
+      const remaining = landQueue.slice(1);
+      if (remaining.length === 0) {
+        updateBracket({ lands: newWorking });
+        setStage("park-done");
+        return;
+      }
+      setLandQueue(remaining);
+      setWorkingLands(newWorking);
+      setCurrentLandId(remaining[0]);
+      setLandBounds({ lo: 0, hi: newWorking.length });
+      setLandCompareIdx(Math.floor(newWorking.length / 2));
+    };
+
+    const pickWinner = (winnerId) => {
+      const currentWon = winnerId === currentLandId;
+      let newLo = landBounds.lo, newHi = landBounds.hi;
+      if (currentWon) newHi = landCompareIdx;
+      else newLo = landCompareIdx + 1;
+      if (newLo >= newHi) { finishInsert(newLo); return; }
+      setLandBounds({ lo: newLo, hi: newHi });
+      setLandCompareIdx(Math.floor((newLo + newHi) / 2));
+    };
+
+    const skip = () => {
+      const newLo = landCompareIdx + 1;
+      if (newLo >= landBounds.hi) { finishInsert(newLo); return; }
+      setLandBounds({ lo: newLo, hi: landBounds.hi });
+      setLandCompareIdx(Math.floor((newLo + landBounds.hi) / 2));
+    };
+
+    const compsRemaining = Math.ceil(Math.log2(Math.max(2, landBounds.hi - landBounds.lo + 1)));
+
+    return <MatchupScreen
+      title="🗺 There are no rides in either land."
+      subtitle="Which would you spend more time in?"
+      a={current} b={opponent}
+      aPark={findPark(current.parkId)} bPark={findPark(opponent.parkId)}
+      aLand={null} bLand={null}
+      compsRemaining={compsRemaining}
+      onPick={pickWinner}
+      onSkip={skip}
+      onQuit={() => { if (confirm("Quit? Your progress will be lost.")) { setRerankMode(null); setStage("hub"); } }}
+      mode={rerankMode === "land" ? "Re-ranking" : "Land matchup"}
+      isLand
+    />;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PARK DONE
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (stage === "park-done") {
+    const park = findPark(parkId);
+    return (
+      <div style={{ textAlign: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 56, marginBottom: 12 }}>🏆</div>
+        <h2 style={{ color: "#f0e6c8", margin: "0 0 8px", fontSize: 22 }}>{park?.name} session complete!</h2>
+        <p style={{ color: "#666", fontSize: 13, marginBottom: 24 }}>Your ranked lists are updated.</p>
+        <Btn onClick={() => setStage("hub")}>← Back to hub</Btn>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// Compact button styling used across BracketView
+const smallBtnStyle = {
+  background: "none", border: "1px solid #2a2a4a", borderRadius: 6,
+  color: "#888", fontSize: 11, cursor: "pointer", padding: "4px 10px"
+};
+
+// ── BRACKET HUB ───────────────────────────────────────────────────────────────
+function BracketHub({ data, bracket, rankedRides, rankedLands, didNotRide, didNotGo, onStartPark, onRerankRide, onRerankLand, onClearAll, onRemoveDidNotRide, onRemoveDidNotGo }) {
+  const [tab, setTab] = useState("rides"); // rides | lands | parks
+
+  const findAttr = (id) => data.attractions.find((a) => a.id === id);
+  const findLand = (id) => data.lands.find((l) => l.id === id);
+  const findPark = (id) => data.parks.find((p) => p.id === id);
+  const parkOf = (a) => findPark(findLand(a?.landId)?.parkId);
+
+  const rankedRideAttrs = rankedRides.map(findAttr).filter(Boolean);
+  const rankedLandObjs = rankedLands.map(findLand).filter(Boolean);
+
+  // Park progress
+  const parks = data.parks.map((p) => {
+    const parkRides = data.attractions.filter((a) => findLand(a.landId)?.parkId === p.id && !a.archived);
+    const parkLands = data.lands.filter((l) => l.parkId === p.id);
+    const ridesProcessed = parkRides.filter((a) => rankedRides.includes(a.id) || didNotRide[a.id]).length;
+    const landsProcessed = parkLands.filter((l) => rankedLands.includes(l.id) || didNotGo[l.id]).length;
+    return {
+      ...p,
+      totalRides: parkRides.length,
+      ridesProcessed,
+      totalLands: parkLands.length,
+      landsProcessed,
+      complete: ridesProcessed === parkRides.length && landsProcessed === parkLands.length && parkRides.length > 0,
+    };
+  });
+
+  // For Park rankings tab — sort by derivedParkScore (from rankedLands)
+  const rankedParks = [...data.parks]
+    .map((p) => ({ ...p, score: derivedParkScore(p.id, data.lands, rankedLands) }))
+    .filter((p) => p.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  // For Lands tab — both bracket rank and derived (from rides) rank to compare
+  const derivedLandSorted = derivedLandRanking(data.lands, data.attractions, rankedRides);
+  const derivedLandRankMap = new Map(derivedLandSorted.map((l, i) => [l.id, i + 1]));
+
+  return (
+    <div>
+      <div style={{ background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 12, padding: 22, marginBottom: 18 }}>
+        <h2 style={{ margin: "0 0 6px", color: "#f0e6c8", fontSize: 19 }}>🥊 Head-to-Head Rankings</h2>
+        <p style={{ color: "#666", fontSize: 13, lineHeight: 1.5, margin: 0 }}>
+          Pick a park and run a full session: <em>"You can only ride one."</em> then <em>"Which land would you spend more time in?"</em>
+        </p>
+      </div>
+
+      <div style={{ marginBottom: 14, color: "#555", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+        Start a park session
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 24 }}>
+        {parks.map((p) => (
+          <button key={p.id} onClick={() => onStartPark(p)} style={{
+            background: p.complete ? "#0a1f12" : "#0f0f1a",
+            color: p.complete ? "#4ade80" : "#f0e6c8",
+            border: `1px solid ${p.complete ? "#166534" : "#2a2a4a"}`,
+            borderRadius: 8, padding: "10px 14px", cursor: "pointer",
+            fontWeight: 700, fontSize: 13, textAlign: "left"
+          }}>
+            {p.name}
+            <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>
+              {p.resort} · 🎢 {p.ridesProcessed}/{p.totalRides} · 🗺 {p.landsProcessed}/{p.totalLands}
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Sub-tabs */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 14, borderBottom: "1px solid #1e1e38" }}>
+        {[
+          ["rides", `🎢 Rides (${rankedRideAttrs.length})`],
+          ["lands", `🗺 Lands (${rankedLandObjs.length})`],
+          ["parks", `🏰 Parks (${rankedParks.length})`],
+        ].map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)} style={{
+            background: "none", color: tab === k ? "#f59e0b" : "#666",
+            border: "none", borderBottom: `2px solid ${tab === k ? "#f59e0b" : "transparent"}`,
+            padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700, marginBottom: -1
+          }}>{label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <button onClick={() => { if (confirm("Clear ALL head-to-head data? Rides, lands, did-not-ride/go memory — everything in this Bracket system. Your precision ratings will not be touched.")) onClearAll(); }} style={{
+          background: "none", border: "1px solid #4a2a2a", borderRadius: 6,
+          color: "#fca5a5", fontSize: 11, cursor: "pointer", padding: "3px 9px", marginBottom: 6, alignSelf: "center"
+        }}>↺ Clear all</button>
+      </div>
+
+      {tab === "rides" && (
+        <>
+          {rankedRideAttrs.length === 0 ? (
+            <div style={{ color: "#666", fontSize: 13, fontStyle: "italic", padding: "20px 0", textAlign: "center" }}>
+              No rides ranked yet — start a park session above.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {rankedRideAttrs.map((a, i) => {
+                const park = parkOf(a);
+                const land = findLand(a.landId);
+                const tier = tierFor(i, rankedRideAttrs.length);
+                return (
+                  <div key={a.id} style={{
+                    background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 8,
+                    padding: "10px 14px", display: "grid", gridTemplateColumns: "36px 1fr auto auto", gap: 10, alignItems: "center"
+                  }}>
+                    <div style={{ color: tier.color, fontWeight: 800, fontSize: 18 }}>#{i + 1}</div>
+                    <div>
+                      <div style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 14 }}>{a.name}</div>
+                      <div style={{ color: "#666", fontSize: 11 }}>{land?.name} · {park?.name}</div>
+                    </div>
+                    <span style={{
+                      background: tier.color + "22", color: tier.color, border: `1px solid ${tier.color}55`,
+                      borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
+                      textTransform: "uppercase", whiteSpace: "nowrap"
+                    }}>{tier.label}</span>
+                    <button onClick={() => onRerankRide(a)} style={{
+                      background: "none", border: "1px solid #2a2a4a", borderRadius: 4,
+                      color: "#888", fontSize: 10, cursor: "pointer", padding: "3px 8px"
+                    }}>↻ Re-rank</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {Object.keys(didNotRide).length > 0 && (
+            <details style={{ marginTop: 20 }}>
+              <summary style={{ color: "#666", fontSize: 12, cursor: "pointer" }}>
+                🚫 Did not ride ({Object.keys(didNotRide).length})
+              </summary>
+              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {Object.keys(didNotRide).map((id) => {
+                  const a = findAttr(id);
+                  if (!a) return null;
+                  return (
+                    <span key={id} onClick={() => onRemoveDidNotRide(id)} style={{
+                      background: "#1a1a2e", color: "#666", border: "1px solid #2a2a4a",
+                      borderRadius: 4, padding: "3px 8px", fontSize: 11, cursor: "pointer"
+                    }}>{a.name} ×</span>
+                  );
+                })}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+
+      {tab === "lands" && (
+        <>
+          <div style={{ color: "#666", fontSize: 11, marginBottom: 10, fontStyle: "italic" }}>
+            <span style={{ color: "#c084fc" }}>Bracket rank</span> = your gut about atmosphere · <span style={{ color: "#06b6d4" }}>Derived rank</span> = computed from your ride rankings · disagreement = surprise
+          </div>
+          {rankedLandObjs.length === 0 ? (
+            <div style={{ color: "#666", fontSize: 13, fontStyle: "italic", padding: "20px 0", textAlign: "center" }}>
+              No lands ranked yet — start a park session above.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {rankedLandObjs.map((l, i) => {
+                const park = findPark(l.parkId);
+                const tier = tierFor(i, rankedLandObjs.length);
+                const derivedRank = derivedLandRankMap.get(l.id);
+                const derivedScore = derivedLandScore(l.id, data.attractions, rankedRides);
+                const gap = derivedRank ? derivedRank - (i + 1) : null;
+                const gapColor = gap === null ? "#444" : Math.abs(gap) <= 1 ? "#22c55e" : Math.abs(gap) <= 3 ? "#f59e0b" : "#ef4444";
+                const gapLabel = gap === null ? "" : gap === 0 ? "match" : gap > 0 ? `+${gap} (gut > math)` : `${gap} (math > gut)`;
+                return (
+                  <div key={l.id} style={{
+                    background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 8,
+                    padding: "10px 14px"
+                  }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "36px 1fr auto auto", gap: 10, alignItems: "center" }}>
+                      <div style={{ color: tier.color, fontWeight: 800, fontSize: 18 }}>#{i + 1}</div>
+                      <div>
+                        <div style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 14 }}>{l.name}</div>
+                        <div style={{ color: "#666", fontSize: 11 }}>{park?.name}</div>
+                      </div>
+                      <span style={{
+                        background: tier.color + "22", color: tier.color, border: `1px solid ${tier.color}55`,
+                        borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700,
+                        textTransform: "uppercase", whiteSpace: "nowrap"
+                      }}>{tier.label}</span>
+                      <button onClick={() => onRerankLand(l)} style={{
+                        background: "none", border: "1px solid #2a2a4a", borderRadius: 4,
+                        color: "#888", fontSize: 10, cursor: "pointer", padding: "3px 8px"
+                      }}>↻ Re-rank</button>
+                    </div>
+                    {derivedRank && (
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid #1a1a2e", display: "flex", gap: 12, fontSize: 10 }}>
+                        <span style={{ color: "#c084fc" }}>Gut: <strong>#{i + 1}</strong></span>
+                        <span style={{ color: "#06b6d4" }}>Math: <strong>#{derivedRank}</strong> ({derivedScore.toFixed(2)})</span>
+                        <span style={{ color: gapColor, fontWeight: 600 }}>· {gapLabel}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {Object.keys(didNotGo).length > 0 && (
+            <details style={{ marginTop: 20 }}>
+              <summary style={{ color: "#666", fontSize: 12, cursor: "pointer" }}>
+                🚫 Did not go ({Object.keys(didNotGo).length})
+              </summary>
+              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {Object.keys(didNotGo).map((id) => {
+                  const l = findLand(id);
+                  if (!l) return null;
+                  return (
+                    <span key={id} onClick={() => onRemoveDidNotGo(id)} style={{
+                      background: "#1a1a2e", color: "#666", border: "1px solid #2a2a4a",
+                      borderRadius: 4, padding: "3px 8px", fontSize: 11, cursor: "pointer"
+                    }}>{l.name} ×</span>
+                  );
+                })}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+
+      {tab === "parks" && (
+        <>
+          <div style={{ color: "#666", fontSize: 11, marginBottom: 10, fontStyle: "italic" }}>
+            Auto-derived from your land rankings — no matchups needed.
+          </div>
+          {rankedParks.length === 0 ? (
+            <div style={{ color: "#666", fontSize: 13, fontStyle: "italic", padding: "20px 0", textAlign: "center" }}>
+              Rank some lands to see parks emerge here.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {rankedParks.map((p, i) => {
+                const tier = tierFor(i, rankedParks.length);
+                const myLands = data.lands.filter((l) => l.parkId === p.id);
+                const rankedCount = myLands.filter((l) => rankedLands.includes(l.id)).length;
+                return (
+                  <div key={p.id} style={{
+                    background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 8,
+                    padding: "12px 14px", display: "grid", gridTemplateColumns: "36px 1fr auto auto", gap: 10, alignItems: "center"
+                  }}>
+                    <div style={{ color: tier.color, fontWeight: 800, fontSize: 20 }}>#{i + 1}</div>
+                    <div>
+                      <div style={{ color: "#f0e6c8", fontWeight: 800, fontSize: 15 }}>{p.name}</div>
+                      <div style={{ color: "#666", fontSize: 11 }}>{p.resort} · {rankedCount}/{myLands.length} lands ranked</div>
+                    </div>
+                    <span style={{
+                      background: tier.color + "22", color: tier.color, border: `1px solid ${tier.color}55`,
+                      borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700,
+                      textTransform: "uppercase", whiteSpace: "nowrap"
+                    }}>{tier.label}</span>
+                    <span style={{ color: "#06b6d4", fontWeight: 700, fontSize: 14 }}>{p.score.toFixed(2)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── MATCHUP SCREEN (shared between rides & lands) ─────────────────────────────
+function MatchupScreen({ title, subtitle, a, b, aPark, bPark, aLand, bLand, compsRemaining, onPick, onSkip, onQuit, mode, isLand }) {
+  const Card = ({ attr, park, land }) => (
+    <button onClick={() => onPick(attr.id)} style={{
+      flex: 1, background: "linear-gradient(180deg, #0f0f1a 0%, #07070f 100%)",
+      border: "2px solid #2a2a4a", borderRadius: 14, padding: "24px 16px",
+      cursor: "pointer", textAlign: "center", color: "#f0e6c8", fontFamily: "inherit",
+      transition: "transform 0.1s, border-color 0.15s", minHeight: 180,
+      display: "flex", flexDirection: "column", justifyContent: "center", gap: 6
+    }} onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#f59e0b"; e.currentTarget.style.transform = "translateY(-2px)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#2a2a4a"; e.currentTarget.style.transform = "translateY(0)"; }}>
+      {!isLand && <div style={{ color: "#666", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase" }}>{attr.type}</div>}
+      <div style={{ color: "#f0e6c8", fontSize: isLand ? 20 : 18, fontWeight: 800, lineHeight: 1.2 }}>{attr.name}</div>
+      {land && <div style={{ color: "#888", fontSize: 12 }}>{land.name}</div>}
+      <div style={{ color: "#555", fontSize: 11 }}>{park?.name}</div>
+    </button>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <button onClick={onQuit} style={{
+          background: "none", border: "1px solid #4a2a2a", borderRadius: 6,
+          color: "#fca5a5", fontSize: 11, cursor: "pointer", padding: "4px 10px"
+        }}>← quit</button>
+        <div style={{ color: "#666", fontSize: 11, textAlign: "right" }}>
+          {mode}<br />
+          <span style={{ color: "#888" }}>~{compsRemaining} compare{compsRemaining === 1 ? "" : "s"} left for this one</span>
+        </div>
+      </div>
+
+      <div style={{ color: "#f0e6c8", fontSize: 15, marginBottom: 4, textAlign: "center", fontWeight: 700 }}>
+        {title}
+      </div>
+      <div style={{ color: "#888", fontSize: 12, textAlign: "center", marginBottom: 18, fontStyle: "italic" }}>
+        {subtitle}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        <Card attr={a} park={aPark} land={aLand} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", color: "#444", fontWeight: 800, fontSize: 18 }}>VS</div>
+        <Card attr={b} park={bPark} land={bLand} />
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
+        <Btn small variant="ghost" onClick={onSkip}>⇄ Too close to call</Btn>
+      </div>
+    </div>
+  );
+}
+
 // ── COMPARE VIEW ──────────────────────────────────────────────────────────────
 function CompareView({ data, myPassphrase }) {
   const [theirPhrase, setTheirPhrase] = useState("");
@@ -2121,6 +3046,7 @@ export default function App() {
 
   const tabs = [
     { id: "rate", label: "⭐ Rate" },
+    { id: "bracket", label: "🥊 Bracket" },
     { id: "parks", label: "🏰 Parks" },
     { id: "lands", label: "🗺 Lands" },
     { id: "attractions", label: "🎢 Attractions" },
@@ -2287,6 +3213,7 @@ export default function App() {
       {/* Content */}
       <div style={{ maxWidth: 800, margin: "0 auto", padding: "20px 16px 180px" }}>
         {tab === "rate" && <RateView data={data} setData={setAndSave} />}
+        {tab === "bracket" && <BracketView data={data} setData={setAndSave} />}
         {tab === "parks" && <ParksView data={data} setData={setAndSave} />}
         {tab === "lands" && <LandsView data={data} setData={setAndSave} />}
         {tab === "attractions" && <AttractionsView data={data} setData={setAndSave} />}
