@@ -1687,6 +1687,26 @@ function derivedLandScore(landId, attractions, rankedRides) {
   return +inLand.reduce((s, a) => s + rankScore(rankedRides, a.id), 0).toFixed(3);
 }
 
+// Normalized math score (0-1) for a land — derivedLandScore divided by the max derived score across all lands.
+// This makes it directly comparable to a gut score (which is also 0-1).
+function normalizedMathScore(landId, lands, attractions, rankedRides) {
+  const raw = derivedLandScore(landId, attractions, rankedRides);
+  const maxRaw = Math.max(...lands.map((l) => derivedLandScore(l.id, attractions, rankedRides)), 0.0001);
+  return maxRaw === 0 ? 0 : raw / maxRaw;
+}
+
+// Gut score (0-1) = inverse-rank weight, identical to rankScore on rankedLands
+function gutLandScore(landId, rankedLands) {
+  return rankScore(rankedLands, landId);
+}
+
+// Blend gut and math into a single official score. weight = 0..1 weight given to GUT (math gets 1 - weight).
+function officialLandScore(landId, lands, attractions, rankedRides, rankedLands, gutWeight) {
+  const gut = gutLandScore(landId, rankedLands);
+  const math = normalizedMathScore(landId, lands, attractions, rankedRides);
+  return +(gut * gutWeight + math * (1 - gutWeight)).toFixed(3);
+}
+
 // Derived park score: sum of rank scores of all lands in that park (from the land bracket).
 function derivedParkScore(parkId, lands, rankedLands) {
   const inPark = lands.filter((l) => l.parkId === parkId);
@@ -1698,6 +1718,17 @@ function derivedLandRanking(lands, attractions, rankedRides) {
   return [...lands]
     .map((l) => ({ ...l, derived: derivedLandScore(l.id, attractions, rankedRides) }))
     .sort((a, b) => b.derived - a.derived);
+}
+
+// Plain-language label for the gut-vs-math relationship
+function blendLabel(gutRank, mathRank) {
+  if (!gutRank || !mathRank) return "";
+  const gap = mathRank - gutRank;
+  if (gap === 0) return "perfect agreement";
+  if (Math.abs(gap) === 1) return gap > 0 ? "slight gut edge" : "slight math edge";
+  if (Math.abs(gap) <= 3) return gap > 0 ? "gut > math" : "math > gut";
+  if (gap > 0) return "gut loves this, math doesn't";
+  return "math loves this, gut doesn't";
 }
 
 function BracketView({ data, setData }) {
@@ -1778,6 +1809,8 @@ function BracketView({ data, setData }) {
       onClearAll={() => updateBracket({ rides: [], didNotRide: {}, lands: [], didNotGo: {} })}
       onRemoveDidNotRide={(id) => { const next = { ...didNotRide }; delete next[id]; updateBracket({ didNotRide: next }); }}
       onRemoveDidNotGo={(id) => { const next = { ...didNotGo }; delete next[id]; updateBracket({ didNotGo: next }); }}
+      landBlend={bracket.landBlend ?? 0.65}
+      onLandBlendChange={(v) => updateBracket({ landBlend: v })}
     />;
   }
 
@@ -2271,7 +2304,7 @@ const smallBtnStyle = {
 };
 
 // ── BRACKET HUB ───────────────────────────────────────────────────────────────
-function BracketHub({ data, bracket, rankedRides, rankedLands, didNotRide, didNotGo, onStartPark, onRerankRide, onRerankLand, onClearAll, onRemoveDidNotRide, onRemoveDidNotGo }) {
+function BracketHub({ data, bracket, rankedRides, rankedLands, didNotRide, didNotGo, onStartPark, onRerankRide, onRerankLand, onClearAll, onRemoveDidNotRide, onRemoveDidNotGo, landBlend, onLandBlendChange }) {
   const [tab, setTab] = useState("rides"); // rides | lands | parks
 
   const findAttr = (id) => data.attractions.find((a) => a.id === id);
@@ -2415,79 +2448,148 @@ function BracketHub({ data, bracket, rankedRides, rankedLands, didNotRide, didNo
         </>
       )}
 
-      {tab === "lands" && (
-        <>
-          <div style={{ color: "#666", fontSize: 11, marginBottom: 10, fontStyle: "italic" }}>
-            <span style={{ color: "#c084fc" }}>Bracket rank</span> = your gut about atmosphere · <span style={{ color: "#06b6d4" }}>Derived rank</span> = computed from your ride rankings · disagreement = surprise
-          </div>
-          {rankedLandObjs.length === 0 ? (
-            <div style={{ color: "#666", fontSize: 13, fontStyle: "italic", padding: "20px 0", textAlign: "center" }}>
-              No lands ranked yet — start a park session above.
+      {tab === "lands" && (() => {
+        // Compute the OFFICIAL ranking from blend, plus gut & math rank maps for display
+        const blend = landBlend ?? 0.65;
+
+        // Sort ALL lands that have either gut or math signal into an official ranking
+        const allLandsWithSignal = data.lands
+          .map((l) => ({
+            ...l,
+            gut: gutLandScore(l.id, rankedLands),
+            math: normalizedMathScore(l.id, data.lands, data.attractions, rankedRides),
+            mathRaw: derivedLandScore(l.id, data.attractions, rankedRides),
+            official: officialLandScore(l.id, data.lands, data.attractions, rankedRides, rankedLands, blend),
+          }))
+          .filter((l) => rankedLands.includes(l.id) || l.mathRaw > 0)
+          .sort((a, b) => b.official - a.official);
+
+        // Build rank maps so each card knows its gut rank, math rank, and official rank
+        const gutRankMap = new Map(rankedLands.map((id, i) => [id, i + 1]));
+        const mathRanked = [...data.lands]
+          .map((l) => ({ id: l.id, score: derivedLandScore(l.id, data.attractions, rankedRides) }))
+          .filter((l) => l.score > 0)
+          .sort((a, b) => b.score - a.score);
+        const mathRankMap = new Map(mathRanked.map((l, i) => [l.id, i + 1]));
+
+        return (
+          <>
+            {/* Blend slider */}
+            <div style={{
+              background: "#0d0d1c", border: "1px solid #2a2a4a", borderRadius: 10,
+              padding: "12px 16px", marginBottom: 14
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                <div style={{ color: "#a0a0c0", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                  Official ranking weight
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>
+                  <span style={{ color: "#c084fc" }}>{Math.round(blend * 100)}% gut</span>
+                  <span style={{ color: "#666", margin: "0 6px" }}>·</span>
+                  <span style={{ color: "#06b6d4" }}>{Math.round((1 - blend) * 100)}% math</span>
+                </div>
+              </div>
+              <div style={{ position: "relative", height: 24, display: "flex", alignItems: "center", marginBottom: 4 }}>
+                <div style={{
+                  position: "absolute", left: 0, right: 0, height: 5,
+                  background: "linear-gradient(to right, #c084fc 0%, #c084fc 50%, #06b6d4 50%, #06b6d4 100%)",
+                  borderRadius: 3, opacity: 0.3
+                }} />
+                <div style={{
+                  position: "absolute", left: 0, width: `${blend * 100}%`, height: 5,
+                  background: "#c084fc", borderRadius: 3
+                }} />
+                <input
+                  type="range" min={0} max={1} step={0.01} value={blend}
+                  onChange={(e) => onLandBlendChange(+e.target.value)}
+                  style={{ position: "absolute", width: "100%", height: 24, opacity: 0, cursor: "pointer", margin: 0, padding: 0 }}
+                />
+                <div style={{
+                  position: "absolute", left: `calc(${blend * 100}% - 9px)`,
+                  width: 18, height: 18, borderRadius: "50%",
+                  background: "#f0e6c8", border: "3px solid #070711",
+                  boxShadow: "0 0 6px rgba(240, 230, 200, 0.4)",
+                  pointerEvents: "none"
+                }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#444", marginTop: 4 }}>
+                <span>100% gut</span><span>50/50</span><span>100% math</span>
+              </div>
+              <div style={{ color: "#555", fontSize: 11, fontStyle: "italic", marginTop: 6 }}>
+                <span style={{ color: "#c084fc" }}>Gut</span> = your head-to-head matchups about atmosphere · <span style={{ color: "#06b6d4" }}>Math</span> = derived from your ride rankings
+              </div>
             </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {rankedLandObjs.map((l, i) => {
-                const park = findPark(l.parkId);
-                const tier = tierFor(i, rankedLandObjs.length);
-                const derivedRank = derivedLandRankMap.get(l.id);
-                const derivedScore = derivedLandScore(l.id, data.attractions, rankedRides);
-                const gap = derivedRank ? derivedRank - (i + 1) : null;
-                const gapColor = gap === null ? "#444" : Math.abs(gap) <= 1 ? "#22c55e" : Math.abs(gap) <= 3 ? "#f59e0b" : "#ef4444";
-                const gapLabel = gap === null ? "" : gap === 0 ? "match" : gap > 0 ? `+${gap} (gut > math)` : `${gap} (math > gut)`;
-                return (
-                  <div key={l.id} style={{
-                    background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 8,
-                    padding: "10px 14px"
-                  }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "36px 1fr auto auto", gap: 10, alignItems: "center" }}>
-                      <div style={{ color: tier.color, fontWeight: 800, fontSize: 18 }}>#{i + 1}</div>
-                      <div>
-                        <div style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 14 }}>{l.name}</div>
-                        <div style={{ color: "#666", fontSize: 11 }}>{park?.name}</div>
-                      </div>
-                      <span style={{
-                        background: tier.color + "22", color: tier.color, border: `1px solid ${tier.color}55`,
-                        borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700,
-                        textTransform: "uppercase", whiteSpace: "nowrap"
-                      }}>{tier.label}</span>
-                      <button onClick={() => onRerankLand(l)} style={{
-                        background: "none", border: "1px solid #2a2a4a", borderRadius: 4,
-                        color: "#888", fontSize: 10, cursor: "pointer", padding: "3px 8px"
-                      }}>↻ Re-rank</button>
-                    </div>
-                    {derivedRank && (
-                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid #1a1a2e", display: "flex", gap: 12, fontSize: 10 }}>
-                        <span style={{ color: "#c084fc" }}>Gut: <strong>#{i + 1}</strong></span>
-                        <span style={{ color: "#06b6d4" }}>Math: <strong>#{derivedRank}</strong> ({derivedScore.toFixed(2)})</span>
-                        <span style={{ color: gapColor, fontWeight: 600 }}>· {gapLabel}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {Object.keys(didNotGo).length > 0 && (
-            <details style={{ marginTop: 20 }}>
-              <summary style={{ color: "#666", fontSize: 12, cursor: "pointer" }}>
-                🚫 Did not go ({Object.keys(didNotGo).length})
-              </summary>
-              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {Object.keys(didNotGo).map((id) => {
-                  const l = findLand(id);
-                  if (!l) return null;
+
+            {allLandsWithSignal.length === 0 ? (
+              <div style={{ color: "#666", fontSize: 13, fontStyle: "italic", padding: "20px 0", textAlign: "center" }}>
+                No lands ranked yet — start a park session above.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {allLandsWithSignal.map((l, i) => {
+                  const park = findPark(l.parkId);
+                  const tier = tierFor(i, allLandsWithSignal.length);
+                  const gutRank = gutRankMap.get(l.id);
+                  const mathRank = mathRankMap.get(l.id);
+                  const gap = gutRank && mathRank ? mathRank - gutRank : null;
+                  const gapColor = gap === null ? "#444" : Math.abs(gap) <= 1 ? "#22c55e" : Math.abs(gap) <= 3 ? "#f59e0b" : "#ef4444";
+                  const lbl = blendLabel(gutRank, mathRank);
                   return (
-                    <span key={id} onClick={() => onRemoveDidNotGo(id)} style={{
-                      background: "#1a1a2e", color: "#666", border: "1px solid #2a2a4a",
-                      borderRadius: 4, padding: "3px 8px", fontSize: 11, cursor: "pointer"
-                    }}>{l.name} ×</span>
+                    <div key={l.id} style={{
+                      background: "#0f0f1a", border: "1px solid #1e1e38", borderRadius: 8,
+                      padding: "10px 14px"
+                    }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "36px 1fr auto auto", gap: 10, alignItems: "center" }}>
+                        <div style={{ color: tier.color, fontWeight: 800, fontSize: 18 }}>#{i + 1}</div>
+                        <div>
+                          <div style={{ color: "#f0e6c8", fontWeight: 700, fontSize: 14 }}>{l.name}</div>
+                          <div style={{ color: "#666", fontSize: 11 }}>{park?.name}</div>
+                        </div>
+                        <span style={{
+                          background: tier.color + "22", color: tier.color, border: `1px solid ${tier.color}55`,
+                          borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700,
+                          textTransform: "uppercase", whiteSpace: "nowrap"
+                        }}>{tier.label}</span>
+                        {gutRank ? (
+                          <button onClick={() => onRerankLand(l)} style={{
+                            background: "none", border: "1px solid #2a2a4a", borderRadius: 4,
+                            color: "#888", fontSize: 10, cursor: "pointer", padding: "3px 8px"
+                          }}>↻ Re-rank</button>
+                        ) : <span style={{ color: "#444", fontSize: 10 }}>math only</span>}
+                      </div>
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid #1a1a2e", display: "flex", gap: 12, fontSize: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+                        <span style={{ color: "#f0e6c8" }}>Official: <strong style={{ color: "#f59e0b" }}>{l.official.toFixed(2)}</strong></span>
+                        <span style={{ color: "#c084fc" }}>Gut: <strong>{gutRank ? `#${gutRank}` : "—"}</strong> {gutRank ? `(${l.gut.toFixed(2)})` : ""}</span>
+                        <span style={{ color: "#06b6d4" }}>Math: <strong>{mathRank ? `#${mathRank}` : "—"}</strong> {mathRank ? `(${l.math.toFixed(2)})` : ""}</span>
+                        {lbl && <span style={{ color: gapColor, fontWeight: 600 }}>· {lbl}</span>}
+                      </div>
+                    </div>
                   );
                 })}
               </div>
-            </details>
-          )}
-        </>
-      )}
+            )}
+            {Object.keys(didNotGo).length > 0 && (
+              <details style={{ marginTop: 20 }}>
+                <summary style={{ color: "#666", fontSize: 12, cursor: "pointer" }}>
+                  🚫 Did not go ({Object.keys(didNotGo).length})
+                </summary>
+                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {Object.keys(didNotGo).map((id) => {
+                    const l = findLand(id);
+                    if (!l) return null;
+                    return (
+                      <span key={id} onClick={() => onRemoveDidNotGo(id)} style={{
+                        background: "#1a1a2e", color: "#666", border: "1px solid #2a2a4a",
+                        borderRadius: 4, padding: "3px 8px", fontSize: 11, cursor: "pointer"
+                      }}>{l.name} ×</span>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
+          </>
+        );
+      })()}
 
       {tab === "parks" && (
         <>
